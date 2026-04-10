@@ -84,7 +84,7 @@ Phase 1 adds OAuth integration for all three external services (GitHub, Vercel, 
 - `generateOAuthState("vercel")` must return a string prefixed with `vercel:` and set an HTTP-only cookie named `oauth_state` with `maxAge: 600`.
 - `validateOAuthState(state, "vercel")` must return `true` only when the state matches the cookie AND the provider prefix matches. It must always clear the cookie afterward.
 - `validateOAuthState(state, "supabase")` must return `false` if the cookie was set for `"vercel"` — cross-provider confusion is blocked.
-- `buildAuthorizationUrl("vercel", state, redirectUri)` must produce a URL starting with `https://vercel.com/integrations/oauthclient/authorize` with correct query params (`client_id`, `redirect_uri`, `response_type=code`, `state`). Vercel has no `scope` param.
+- `buildAuthorizationUrl("vercel", state, redirectUri)` must produce a URL starting with `https://vercel.com/oauth/authorize` with correct query params (`client_id`, `redirect_uri`, `response_type=code`, `state`). Vercel has no `scope` param.
 - `buildAuthorizationUrl("supabase", state, redirectUri)` must produce a URL starting with `https://api.supabase.com/v1/oauth/authorize` with `scope=all`.
 - `exchangeCodeForTokens` must POST to the provider's token URL with `application/x-www-form-urlencoded` content type and include `grant_type=authorization_code`.
 - `refreshAccessToken` must POST with `grant_type=refresh_token`.
@@ -139,7 +139,7 @@ Phase 1 adds OAuth integration for all three external services (GitHub, Vercel, 
 - `ConnectedAccounts` must be wrapped in `<Suspense>` (required because it uses `useSearchParams`).
 
 **Environment variables (`apps/web/.env.example`):**
-- Must include `VERCEL_CLIENT_ID`, `VERCEL_CLIENT_SECRET`, `SUPABASE_CLIENT_ID`, `SUPABASE_CLIENT_SECRET` as new entries.
+- Must include `INTEGRATION_VERCEL_CLIENT_ID`, `INTEGRATION_VERCEL_CLIENT_SECRET`, `SUPABASE_CLIENT_ID`, `SUPABASE_CLIENT_SECRET` as new entries.
 
 **What NOT to test:**
 - Do not attempt actual OAuth flows — there are no real OAuth app credentials configured.

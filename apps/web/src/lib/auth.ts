@@ -8,8 +8,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   adapter: PrismaAdapter(prisma),
   providers: [
     GitHub({
-      clientId: process.env.GITHUB_CLIENT_ID!,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+      clientId: process.env.GITHUB_CLIENT_ID!.trim(),
+      clientSecret: process.env.GITHUB_CLIENT_SECRET!.trim(),
       authorization: {
         params: {
           scope: "read:user user:email repo",
@@ -22,41 +22,47 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
   callbacks: {
     async signIn({ user, account }) {
-      // Capture GitHub access token and store in OAuthConnection for API use
+      // Capture GitHub access token and store in OAuthConnection for API use.
+      // Wrapped in try-catch so a failure here (missing ENCRYPTION_KEY, DB
+      // unreachable, etc.) never blocks the core auth flow.
       if (account?.provider === "github" && account.access_token && user.id) {
-        const accessTokenEnc = encrypt(account.access_token);
-        const refreshTokenEnc = account.refresh_token
-          ? encrypt(account.refresh_token)
-          : null;
+        try {
+          const accessTokenEnc = encrypt(account.access_token);
+          const refreshTokenEnc = account.refresh_token
+            ? encrypt(account.refresh_token)
+            : null;
 
-        await prisma.oAuthConnection.upsert({
-          where: {
-            userId_provider: {
+          await prisma.oAuthConnection.upsert({
+            where: {
+              userId_provider: {
+                userId: user.id,
+                provider: "GITHUB",
+              },
+            },
+            update: {
+              accessTokenEnc,
+              refreshTokenEnc,
+              tokenExpiresAt: account.expires_at
+                ? new Date(account.expires_at * 1000)
+                : null,
+              scopes: account.scope?.split(",").map((s) => s.trim()) ?? [],
+              providerAccountId: account.providerAccountId,
+            },
+            create: {
               userId: user.id,
               provider: "GITHUB",
+              providerAccountId: account.providerAccountId,
+              accessTokenEnc,
+              refreshTokenEnc,
+              tokenExpiresAt: account.expires_at
+                ? new Date(account.expires_at * 1000)
+                : null,
+              scopes: account.scope?.split(",").map((s) => s.trim()) ?? [],
             },
-          },
-          update: {
-            accessTokenEnc,
-            refreshTokenEnc,
-            tokenExpiresAt: account.expires_at
-              ? new Date(account.expires_at * 1000)
-              : null,
-            scopes: account.scope?.split(",").map((s) => s.trim()) ?? [],
-            providerAccountId: account.providerAccountId,
-          },
-          create: {
-            userId: user.id,
-            provider: "GITHUB",
-            providerAccountId: account.providerAccountId,
-            accessTokenEnc,
-            refreshTokenEnc,
-            tokenExpiresAt: account.expires_at
-              ? new Date(account.expires_at * 1000)
-              : null,
-            scopes: account.scope?.split(",").map((s) => s.trim()) ?? [],
-          },
-        });
+          });
+        } catch (error) {
+          console.error("[auth] Failed to store GitHub OAuth token:", error);
+        }
       }
       return true;
     },

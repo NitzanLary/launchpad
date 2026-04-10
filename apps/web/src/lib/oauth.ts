@@ -50,10 +50,10 @@ export async function validateOAuthState(
  */
 export const OAUTH_CONFIG = {
   vercel: {
-    authorizationUrl: "https://vercel.com/integrations/oauthclient/authorize",
-    tokenUrl: "https://api.vercel.com/v2/oauth/access_token",
-    clientId: () => process.env.VERCEL_CLIENT_ID!,
-    clientSecret: () => process.env.VERCEL_CLIENT_SECRET!,
+    authorizationUrl: "https://vercel.com/oauth/authorize",
+    tokenUrl: "https://api.vercel.com/login/oauth/token",
+    clientId: () => process.env.INTEGRATION_VERCEL_CLIENT_ID!,
+    clientSecret: () => process.env.INTEGRATION_VERCEL_CLIENT_SECRET!,
     // Vercel doesn't use traditional scopes — permissions are set during integration setup
     scopes: [],
   },
