@@ -1,0 +1,343 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth.js Models ──────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts         Account[]
+  sessions         Session[]
+  oauthConnections OAuthConnection[]
+  projects         Project[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── LaunchPad OAuth Connections ─────────────────────────────────────────────
+
+model OAuthConnection {
+  id                String        @id @default(cuid())
+  userId            String
+  provider          OAuthProvider
+  providerAccountId String
+
+  accessTokenEnc  Bytes
+  refreshTokenEnc Bytes?
+  tokenExpiresAt  DateTime?
+  scopes          String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+enum OAuthProvider {
+  GITHUB
+  VERCEL
+  SUPABASE
+}
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+model Project {
+  id     String        @id @default(cuid())
+  name   String
+  slug   String        @unique
+  userId String
+  status ProjectStatus @default(CREATING)
+
+  // GitHub
+  githubRepoId    Int?
+  githubRepoUrl   String?
+  githubWebhookId Int?
+
+  // Vercel
+  vercelProjectId  String?
+  vercelProjectUrl String?
+
+  // Webhook
+  webhookSecretEnc Bytes?
+
+  // GitHub owner (login) for API calls
+  githubOwner String?
+
+  // Supabase project refs for cleanup on failure
+  supabaseStagingRef String?
+  supabaseProdRef    String?
+
+  // Template
+  templateVersion String @default("1.0.0")
+  claudeMdHash    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  environments   Environment[]
+  deploys        Deploy[]
+  extensions     Extension[]
+  previewSchemas PreviewSchema[]
+
+  @@index([userId])
+}
+
+enum ProjectStatus {
+  CREATING
+  ACTIVE
+  ERROR
+  DELETING
+  DELETED
+}
+
+// ─── Environments ────────────────────────────────────────────────────────────
+
+model Environment {
+  id        String          @id @default(cuid())
+  projectId String
+  type      EnvironmentType
+
+  // Supabase
+  supabaseProjectId  String
+  supabaseDbHost     String
+  supabaseDbPassword Bytes
+  supabaseAnonKey    String
+  supabaseServiceKey Bytes
+  supabaseUrl        String
+  dbSchema           String @default("public")
+
+  // Vercel
+  vercelEnvTarget String
+
+  // State
+  currentUrl   String?
+  lastDeployId String?
+  migrationCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deploys Deploy[]
+
+  @@unique([projectId, type])
+  @@index([projectId])
+}
+
+enum EnvironmentType {
+  STAGING
+  PRODUCTION
+}
+
+// ─── Preview Schemas ─────────────────────────────────────────────────────────
+
+model PreviewSchema {
+  id        String @id @default(cuid())
+  projectId String
+
+  branchName       String
+  schemaName       String
+  connectionString Bytes
+
+  vercelDeployId String?
+  previewUrl     String?
+
+  status         PreviewStatus @default(CREATING)
+  lastActivityAt DateTime      @default(now())
+  createdAt      DateTime      @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, branchName])
+  @@unique([projectId, schemaName])
+  @@index([projectId])
+  @@index([lastActivityAt])
+}
+
+enum PreviewStatus {
+  CREATING
+  ACTIVE
+  STALE
+  CLEANING_UP
+  DELETED
+}
+
+// ─── Deploys ─────────────────────────────────────────────────────────────────
+
+model Deploy {
+  id            String       @id @default(cuid())
+  projectId     String
+  environmentId String?
+  type          DeployType
+  status        DeployStatus @default(PENDING)
+
+  // Git
+  gitBranch        String
+  gitCommitSha     String
+  gitCommitMessage String?
+  gitAuthor        String?
+
+  // Vercel
+  vercelDeployId  String?
+  vercelDeployUrl String?
+  vercelBuildLog  String? @db.Text
+
+  // Pipeline
+  pipelineJobId String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  // Rollback
+  rollbackOfId             String?
+  rollbackAvailableUntil   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  environment  Environment?  @relation(fields: [environmentId], references: [id])
+  guardResults GuardResult[]
+  migrations   MigrationLog[]
+
+  @@index([projectId, type])
+  @@index([environmentId])
+  @@index([createdAt])
+}
+
+enum DeployType {
+  PREVIEW
+  STAGING
+  PRODUCTION
+  ROLLBACK
+}
+
+enum DeployStatus {
+  PENDING
+  VALIDATING
+  MIGRATING
+  DEPLOYING
+  VERIFYING
+  SUCCESS
+  FAILED
+  BLOCKED
+  CANCELLED
+}
+
+// ─── Guard Results ───────────────────────────────────────────────────────────
+
+model GuardResult {
+  id       String      @id @default(cuid())
+  deployId String
+  guard    String
+  status   GuardStatus
+  message  String?     @db.Text
+  details  Json?
+
+  createdAt DateTime @default(now())
+
+  deploy Deploy @relation(fields: [deployId], references: [id], onDelete: Cascade)
+
+  @@index([deployId])
+}
+
+enum GuardStatus {
+  PASS
+  WARN
+  BLOCK
+}
+
+// ─── Migration Logs ──────────────────────────────────────────────────────────
+
+model MigrationLog {
+  id            String          @id @default(cuid())
+  deployId      String
+  migrationName String
+  sql           String          @db.Text
+  appliedAt     DateTime        @default(now())
+  durationMs    Int?
+  status        MigrationStatus
+
+  deploy Deploy @relation(fields: [deployId], references: [id], onDelete: Cascade)
+
+  @@index([deployId])
+}
+
+enum MigrationStatus {
+  APPLIED
+  FAILED
+  SKIPPED
+}
+
+// ─── Extensions ──────────────────────────────────────────────────────────────
+
+model Extension {
+  id        String          @id @default(cuid())
+  projectId String
+  name      String
+  status    ExtensionStatus @default(ACTIVE)
+
+  credentialsEnc Bytes
+
+  installedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, name])
+  @@index([projectId])
+}
+
+enum ExtensionStatus {
+  ACTIVE
+  DISABLED
+}

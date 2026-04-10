@@ -1,0 +1,146 @@
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/db";
+import { inngest } from "@/lib/inngest/client";
+import { hasConnection, getProviderToken } from "@/lib/tokens";
+import { SupabaseClient } from "@/lib/integrations";
+import { ERROR_CODES } from "@launchpad/shared";
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const projects = await prisma.project.findMany({
+    where: { userId: session.user.id, status: { not: "DELETED" } },
+    orderBy: { createdAt: "desc" },
+    include: {
+      environments: true,
+      _count: { select: { deploys: true } },
+    },
+  });
+
+  return NextResponse.json(projects);
+}
+
+export async function POST(request: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = await request.json();
+  const { name } = body;
+
+  if (!name || typeof name !== "string") {
+    return NextResponse.json(
+      { error: "Project name is required" },
+      { status: 400 }
+    );
+  }
+
+  const slug = slugify(name);
+  if (slug.length < 2) {
+    return NextResponse.json(
+      { error: "Project name is too short" },
+      { status: 400 }
+    );
+  }
+
+  // Check for existing project with same slug
+  const existing = await prisma.project.findUnique({ where: { slug } });
+  if (existing) {
+    return NextResponse.json(
+      { error: "A project with this name already exists" },
+      { status: 409 }
+    );
+  }
+
+  // Check user's project limit (1 project on free tier)
+  const projectCount = await prisma.project.count({
+    where: {
+      userId: session.user.id,
+      status: { notIn: ["DELETED", "ERROR"] },
+    },
+  });
+  if (projectCount >= 1) {
+    return NextResponse.json(
+      {
+        error:
+          "You already have a LaunchPad project. Free-tier users are limited to 1 project.",
+      },
+      { status: 403 }
+    );
+  }
+
+  // Check all OAuth connections
+  const [hasGithub, hasVercel, hasSupabase] = await Promise.all([
+    hasConnection(session.user.id, "GITHUB"),
+    hasConnection(session.user.id, "VERCEL"),
+    hasConnection(session.user.id, "SUPABASE"),
+  ]);
+
+  if (!hasGithub || !hasVercel || !hasSupabase) {
+    const missing = [
+      !hasGithub && "GitHub",
+      !hasVercel && "Vercel",
+      !hasSupabase && "Supabase",
+    ].filter(Boolean);
+    return NextResponse.json(
+      {
+        error: `Please connect your ${missing.join(", ")} account(s) in Settings before creating a project.`,
+      },
+      { status: 400 }
+    );
+  }
+
+  // Validate Supabase has free project slots
+  try {
+    const { accessToken } = await getProviderToken(session.user.id, "SUPABASE");
+    const supabase = new SupabaseClient(accessToken);
+    const activeCount = await supabase.countActiveProjects();
+    if (activeCount > 0) {
+      return NextResponse.json(
+        { error: ERROR_CODES.SUPABASE_SLOTS_FULL },
+        { status: 400 }
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to validate Supabase account. Please reconnect Supabase in Settings." },
+      { status: 400 }
+    );
+  }
+
+  // Create the project record
+  const project = await prisma.project.create({
+    data: {
+      name,
+      slug,
+      userId: session.user.id,
+      status: "CREATING",
+    },
+  });
+
+  // Trigger the project creation pipeline via Inngest
+  await inngest.send({
+    name: "project/create.requested",
+    data: {
+      projectId: project.id,
+      userId: session.user.id,
+      projectName: name,
+      projectSlug: slug,
+    },
+  });
+
+  return NextResponse.json(project, { status: 201 });
+}
