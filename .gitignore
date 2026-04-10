@@ -10,6 +10,7 @@ out/
 .env
 .env.local
 .env.*.local
+apps/web/.env.local
 
 # IDE
 .vscode/
@@ -34,3 +35,6 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 .vercel
+
+# Supabase
+supabase/.temp/
