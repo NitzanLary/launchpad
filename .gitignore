@@ -38,3 +38,4 @@ coverage/
 
 # Supabase
 supabase/.temp/
+apps/web/supabase/.temp/
