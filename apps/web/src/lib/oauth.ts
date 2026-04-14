@@ -64,6 +64,8 @@ export const OAUTH_CONFIG = {
     clientId: () => process.env.SUPABASE_CLIENT_ID!.trim(),
     clientSecret: () => process.env.SUPABASE_CLIENT_SECRET!.trim(),
     scopes: ["all"],
+    // Supabase requires Basic auth for the token endpoint
+    tokenAuthMethod: "basic" as const,
   },
 } as const;
 
@@ -108,19 +110,30 @@ export async function exchangeCodeForTokens(
   user_id?: string;
 }> {
   const config = OAUTH_CONFIG[provider];
+  const useBasicAuth = "tokenAuthMethod" in config && config.tokenAuthMethod === "basic";
 
-  const body = new URLSearchParams({
-    client_id: config.clientId(),
-    client_secret: config.clientSecret(),
+  const bodyParams: Record<string, string> = {
     code,
     redirect_uri: redirectUri,
     grant_type: "authorization_code",
-  });
+  };
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+
+  if (useBasicAuth) {
+    headers["Authorization"] =
+      "Basic " + btoa(`${config.clientId()}:${config.clientSecret()}`);
+  } else {
+    bodyParams.client_id = config.clientId();
+    bodyParams.client_secret = config.clientSecret();
+  }
 
   const response = await fetch(config.tokenUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers,
+    body: new URLSearchParams(bodyParams).toString(),
   });
 
   if (!response.ok) {
@@ -145,18 +158,29 @@ export async function refreshAccessToken(
   expires_in?: number;
 }> {
   const config = OAUTH_CONFIG[provider];
+  const useBasicAuth = "tokenAuthMethod" in config && config.tokenAuthMethod === "basic";
 
-  const body = new URLSearchParams({
-    client_id: config.clientId(),
-    client_secret: config.clientSecret(),
+  const bodyParams: Record<string, string> = {
     refresh_token: refreshToken,
     grant_type: "refresh_token",
-  });
+  };
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+
+  if (useBasicAuth) {
+    headers["Authorization"] =
+      "Basic " + btoa(`${config.clientId()}:${config.clientSecret()}`);
+  } else {
+    bodyParams.client_id = config.clientId();
+    bodyParams.client_secret = config.clientSecret();
+  }
 
   const response = await fetch(config.tokenUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers,
+    body: new URLSearchParams(bodyParams).toString(),
   });
 
   if (!response.ok) {
