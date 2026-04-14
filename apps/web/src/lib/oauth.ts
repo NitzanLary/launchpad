@@ -63,7 +63,8 @@ export const OAUTH_CONFIG = {
     tokenUrl: "https://api.supabase.com/v1/oauth/token",
     clientId: () => process.env.SUPABASE_CLIENT_ID!.trim(),
     clientSecret: () => process.env.SUPABASE_CLIENT_SECRET!.trim(),
-    scopes: ["all"],
+    // Supabase scopes are configured on the OAuth app in the dashboard (scope param is deprecated)
+    scopes: [],
     // Supabase requires Basic auth for the token endpoint
     tokenAuthMethod: "basic" as const,
   },
