@@ -44,9 +44,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  let tokens;
   try {
     const redirectUri = getCallbackUrl("supabase", request.url);
-    const tokens = await exchangeCodeForTokens("supabase", code, redirectUri);
+    tokens = await exchangeCodeForTokens("supabase", code, redirectUri);
 
     const accessTokenEnc = encrypt(tokens.access_token);
     const refreshTokenEnc = tokens.refresh_token
@@ -82,14 +83,21 @@ export async function GET(request: NextRequest) {
         scopes: ["all"],
       },
     });
+  } catch (err) {
+    console.error("Supabase OAuth callback error:", err);
+    return NextResponse.redirect(
+      new URL("/settings?error=Failed+to+connect+Supabase", request.url)
+    );
+  }
 
-    // Validate Supabase account: check for existing projects
+  // Validate Supabase account: check for existing projects.
+  // This is best-effort — the connection is already saved above.
+  try {
     const { SupabaseClient } = await import("@/lib/integrations/supabase");
     const client = new SupabaseClient(tokens.access_token);
     const projects = await client.listProjects();
 
     if (projects.length > 0) {
-      // Store connection but warn the user — they need 0 existing projects
       return NextResponse.redirect(
         new URL(
           "/settings?connected=supabase&warning=supabase_slots_full",
@@ -97,14 +105,11 @@ export async function GET(request: NextRequest) {
         )
       );
     }
-
-    return NextResponse.redirect(
-      new URL("/settings?connected=supabase", request.url)
-    );
   } catch (err) {
-    console.error("Supabase OAuth callback error:", err);
-    return NextResponse.redirect(
-      new URL("/settings?error=Failed+to+connect+Supabase", request.url)
-    );
+    console.error("Supabase project validation failed (non-fatal):", err);
   }
+
+  return NextResponse.redirect(
+    new URL("/settings?connected=supabase", request.url)
+  );
 }
