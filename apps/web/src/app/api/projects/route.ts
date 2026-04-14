@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
-import { hasConnection, getProviderToken } from "@/lib/tokens";
+import { hasConnection, getProviderToken, TokenError } from "@/lib/tokens";
 import { SupabaseClient } from "@/lib/integrations";
 import { ERROR_CODES } from "@launchpad/shared";
 
@@ -103,7 +103,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Validate Supabase has free project slots
+  // Validate Supabase has free project slots (best-effort).
+  // If validation fails (API unreachable, token issue), log and proceed —
+  // the Inngest pipeline re-validates at step 1 with retries.
   try {
     const { accessToken } = await getProviderToken(session.user.id, "SUPABASE");
     const supabase = new SupabaseClient(accessToken);
@@ -114,11 +116,16 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to validate Supabase account. Please reconnect Supabase in Settings." },
-      { status: 400 }
-    );
+  } catch (err) {
+    // Token errors mean the user needs to reconnect — block creation.
+    if (err instanceof TokenError) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: 400 }
+      );
+    }
+    // API errors (transient failures, rate limits) — log and let the pipeline handle it.
+    console.error("[project-create] Supabase pre-validation failed (non-fatal):", err);
   }
 
   // Create the project record
