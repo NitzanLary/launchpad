@@ -128,26 +128,47 @@ export async function POST(request: NextRequest) {
     console.error("[project-create] Supabase pre-validation failed (non-fatal):", err);
   }
 
-  // Create the project record
-  const project = await prisma.project.create({
-    data: {
-      name,
-      slug,
-      userId: session.user.id,
-      status: "CREATING",
-    },
-  });
+  // Create the project record and trigger the pipeline
+  let project;
+  try {
+    project = await prisma.project.create({
+      data: {
+        name,
+        slug,
+        userId: session.user.id,
+        status: "CREATING",
+      },
+    });
+  } catch (err) {
+    console.error("[project-create] Failed to create project record:", err);
+    return NextResponse.json(
+      { error: "Failed to create project. Please try again." },
+      { status: 500 }
+    );
+  }
 
-  // Trigger the project creation pipeline via Inngest
-  await inngest.send({
-    name: "project/create.requested",
-    data: {
-      projectId: project.id,
-      userId: session.user.id,
-      projectName: name,
-      projectSlug: slug,
-    },
-  });
+  try {
+    await inngest.send({
+      name: "project/create.requested",
+      data: {
+        projectId: project.id,
+        userId: session.user.id,
+        projectName: name,
+        projectSlug: slug,
+      },
+    });
+  } catch (err) {
+    console.error("[project-create] Failed to trigger pipeline:", err);
+    // Mark the project as errored since the pipeline won't run
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { status: "ERROR" },
+    }).catch(() => {});
+    return NextResponse.json(
+      { error: "Project created but the build pipeline failed to start. Please check that Inngest is configured and try again." },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json(project, { status: 201 });
 }

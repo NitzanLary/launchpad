@@ -21,12 +21,19 @@ export default function NewProjectPage() {
         body: JSON.stringify({ name }),
       });
 
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error("Server error — please try again.");
+      }
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.error || "Failed to create project");
       }
 
-      const project = await res.json();
+      const project = data;
       router.push(`/projects/${project.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
