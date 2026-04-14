@@ -50,15 +50,16 @@ export async function validateOAuthState(
  */
 export const OAUTH_CONFIG = {
   vercel: {
-    authorizationUrl: "https://vercel.com/oauth/authorize",
-    tokenUrl: "https://api.vercel.com/login/oauth/token",
+    authorizationUrl: () =>
+      `https://vercel.com/integrations/${process.env.INTEGRATION_VERCEL_SLUG!.trim()}/new`,
+    tokenUrl: "https://api.vercel.com/v2/oauth/access_token",
     clientId: () => process.env.INTEGRATION_VERCEL_CLIENT_ID!.trim(),
     clientSecret: () => process.env.INTEGRATION_VERCEL_CLIENT_SECRET!.trim(),
     // Vercel doesn't use traditional scopes — permissions are set during integration setup
     scopes: [],
   },
   supabase: {
-    authorizationUrl: "https://api.supabase.com/v1/oauth/authorize",
+    authorizationUrl: () => "https://api.supabase.com/v1/oauth/authorize",
     tokenUrl: "https://api.supabase.com/v1/oauth/token",
     clientId: () => process.env.SUPABASE_CLIENT_ID!.trim(),
     clientSecret: () => process.env.SUPABASE_CLIENT_SECRET!.trim(),
@@ -88,7 +89,7 @@ export function buildAuthorizationUrl(
     params.set("scope", config.scopes.join(" "));
   }
 
-  return `${config.authorizationUrl}?${params.toString()}`;
+  return `${config.authorizationUrl()}?${params.toString()}`;
 }
 
 /**
