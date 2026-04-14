@@ -16,9 +16,36 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const state = await generateOAuthState("vercel");
-  const redirectUri = getCallbackUrl("vercel", request.url);
-  const authUrl = buildAuthorizationUrl("vercel", state, redirectUri);
+  if (
+    !process.env.INTEGRATION_VERCEL_CLIENT_ID ||
+    !process.env.INTEGRATION_VERCEL_CLIENT_SECRET ||
+    !process.env.INTEGRATION_VERCEL_SLUG
+  ) {
+    return NextResponse.redirect(
+      new URL(
+        "/settings?error=" +
+          encodeURIComponent(
+            "Vercel Integration OAuth is not configured. INTEGRATION_VERCEL_CLIENT_ID, INTEGRATION_VERCEL_CLIENT_SECRET, and INTEGRATION_VERCEL_SLUG must be set."
+          ),
+        request.url
+      )
+    );
+  }
 
-  return NextResponse.redirect(authUrl);
+  try {
+    const state = await generateOAuthState("vercel");
+    const redirectUri = getCallbackUrl("vercel", request.url);
+    const authUrl = buildAuthorizationUrl("vercel", state, redirectUri);
+
+    return NextResponse.redirect(authUrl);
+  } catch (err) {
+    console.error("Vercel OAuth initiation error:", err);
+    return NextResponse.redirect(
+      new URL(
+        "/settings?error=" +
+          encodeURIComponent("Failed to start Vercel OAuth flow"),
+        request.url
+      )
+    );
+  }
 }

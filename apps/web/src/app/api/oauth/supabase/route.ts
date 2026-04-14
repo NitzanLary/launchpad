@@ -16,9 +16,32 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const state = await generateOAuthState("supabase");
-  const redirectUri = getCallbackUrl("supabase", request.url);
-  const authUrl = buildAuthorizationUrl("supabase", state, redirectUri);
+  if (!process.env.SUPABASE_CLIENT_ID || !process.env.SUPABASE_CLIENT_SECRET) {
+    return NextResponse.redirect(
+      new URL(
+        "/settings?error=" +
+          encodeURIComponent(
+            "Supabase OAuth is not configured. SUPABASE_CLIENT_ID and SUPABASE_CLIENT_SECRET must be set."
+          ),
+        request.url
+      )
+    );
+  }
 
-  return NextResponse.redirect(authUrl);
+  try {
+    const state = await generateOAuthState("supabase");
+    const redirectUri = getCallbackUrl("supabase", request.url);
+    const authUrl = buildAuthorizationUrl("supabase", state, redirectUri);
+
+    return NextResponse.redirect(authUrl);
+  } catch (err) {
+    console.error("Supabase OAuth initiation error:", err);
+    return NextResponse.redirect(
+      new URL(
+        "/settings?error=" +
+          encodeURIComponent("Failed to start Supabase OAuth flow"),
+        request.url
+      )
+    );
+  }
 }
