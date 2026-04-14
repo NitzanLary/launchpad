@@ -33,6 +33,10 @@ export async function getProviderToken(
   });
 
   if (!connection) {
+    // GitHub is connected via Auth.js sign-in — fall back to the Account table
+    if (provider === "GITHUB") {
+      return getGitHubTokenFromAccount(userId);
+    }
     throw new TokenError(
       `No ${provider} connection found. Please connect your ${provider.toLowerCase()} account in Settings.`,
       "NOT_CONNECTED"
@@ -63,6 +67,31 @@ export async function getProviderToken(
   return {
     accessToken,
     providerAccountId: connection.providerAccountId,
+  };
+}
+
+/**
+ * Fall back to the Auth.js Account table for the GitHub access token.
+ * GitHub tokens from Auth.js classic OAuth don't expire, so no refresh logic needed.
+ */
+async function getGitHubTokenFromAccount(
+  userId: string
+): Promise<ResolvedToken> {
+  const account = await prisma.account.findFirst({
+    where: { userId, provider: "github" },
+    select: { access_token: true, providerAccountId: true },
+  });
+
+  if (!account?.access_token) {
+    throw new TokenError(
+      "No GitHub connection found. Please sign in again.",
+      "NOT_CONNECTED"
+    );
+  }
+
+  return {
+    accessToken: account.access_token,
+    providerAccountId: account.providerAccountId,
   };
 }
 
@@ -109,6 +138,9 @@ async function refreshAndStore(
 
 /**
  * Check if a user has a valid connection for a given provider.
+ * For GitHub, falls back to the Auth.js Account table since GitHub is the
+ * sign-in provider and may not have an OAuthConnection row (the signIn
+ * callback that creates it can fail on first login before the User row exists).
  */
 export async function hasConnection(
   userId: string,
@@ -118,7 +150,18 @@ export async function hasConnection(
     where: { userId_provider: { userId, provider } },
     select: { id: true },
   });
-  return !!connection;
+  if (connection) return true;
+
+  // GitHub is connected via Auth.js sign-in — check the Account table as fallback
+  if (provider === "GITHUB") {
+    const account = await prisma.account.findFirst({
+      where: { userId, provider: "github" },
+      select: { id: true },
+    });
+    return !!account;
+  }
+
+  return false;
 }
 
 export class TokenError extends Error {
