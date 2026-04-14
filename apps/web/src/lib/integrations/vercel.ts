@@ -41,7 +41,7 @@ export class VercelClient {
   /** Create a new project linked to a GitHub repo. */
   async createProject(
     name: string,
-    githubRepoId: number
+    githubRepoFullName: string
   ): Promise<{ id: string; name: string }> {
     return this.request("/v10/projects", {
       method: "POST",
@@ -50,7 +50,7 @@ export class VercelClient {
         framework: "nextjs",
         gitRepository: {
           type: "github",
-          repo: githubRepoId,
+          repo: githubRepoFullName,
         },
       }),
     });

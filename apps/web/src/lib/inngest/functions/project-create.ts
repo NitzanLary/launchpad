@@ -325,7 +325,7 @@ export const projectCreate = inngest.createFunction(
         const { accessToken } = await getProviderToken(userId, "VERCEL");
         const vercel = new VercelClient(accessToken);
 
-        const result = await vercel.createProject(projectSlug, repo.id);
+        const result = await vercel.createProject(projectSlug, repo.fullName);
 
         await prisma.project.update({
           where: { id: projectId },
