@@ -7,6 +7,7 @@ import {
   exchangeCodeForTokens,
   getCallbackUrl,
 } from "@/lib/oauth";
+import { VercelClient } from "@/lib/integrations";
 
 /**
  * GET /api/oauth/vercel/callback — Handles the Vercel OAuth callback.
@@ -83,8 +84,20 @@ export async function GET(request: NextRequest) {
       },
     });
 
+    // Check if Vercel has GitHub connected — warn user if not
+    let redirectParams = "connected=vercel";
+    try {
+      const vercel = new VercelClient(tokens.access_token);
+      const hasGitHub = await vercel.hasGitHubIntegration();
+      if (!hasGitHub) {
+        redirectParams = "connected=vercel&vercel_github=missing";
+      }
+    } catch {
+      // Non-fatal — the settings page will show the status separately
+    }
+
     return NextResponse.redirect(
-      new URL("/settings?connected=vercel", request.url)
+      new URL(`/settings?${redirectParams}`, request.url)
     );
   } catch (err) {
     console.error("Vercel OAuth callback error:", err);

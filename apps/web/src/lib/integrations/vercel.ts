@@ -38,6 +38,18 @@ export class VercelClient {
     return this.request("/v9/projects");
   }
 
+  /** Check if the Vercel account has the GitHub integration (Vercel GitHub App) installed. */
+  async hasGitHubIntegration(): Promise<boolean> {
+    try {
+      const data = await this.request<{
+        namespaces: Array<{ provider: string }>;
+      }>("/v1/integrations/git-namespaces");
+      return data.namespaces.some((ns) => ns.provider === "github");
+    } catch {
+      return false;
+    }
+  }
+
   /** Create a new project linked to a GitHub repo. */
   async createProject(
     name: string,

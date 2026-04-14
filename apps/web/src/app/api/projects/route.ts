@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
 import { hasConnection, getProviderToken, TokenError } from "@/lib/tokens";
-import { SupabaseClient } from "@/lib/integrations";
+import { SupabaseClient, VercelClient } from "@/lib/integrations";
 import { ERROR_CODES } from "@launchpad/shared";
 
 function slugify(name: string): string {
@@ -101,6 +101,31 @@ export async function POST(request: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  // Check that Vercel has the GitHub integration installed.
+  // Without it, Vercel can't link to the user's GitHub repos and project creation will fail.
+  try {
+    const { accessToken: vercelToken } = await getProviderToken(
+      session.user.id,
+      "VERCEL"
+    );
+    const vercel = new VercelClient(vercelToken);
+    const hasGitHub = await vercel.hasGitHubIntegration();
+    if (!hasGitHub) {
+      return NextResponse.json(
+        {
+          error: ERROR_CODES.VERCEL_GITHUB_NOT_CONNECTED,
+          code: "VERCEL_GITHUB_NOT_CONNECTED",
+        },
+        { status: 400 }
+      );
+    }
+  } catch (err) {
+    if (err instanceof TokenError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    console.error("[project-create] Vercel GitHub check failed (non-fatal):", err);
   }
 
   // Validate Supabase has free project slots (best-effort).

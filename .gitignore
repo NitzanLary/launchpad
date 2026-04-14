@@ -39,3 +39,8 @@ coverage/
 # Supabase
 supabase/.temp/
 apps/web/supabase/.temp/
+
+# Agents
+.mcp.json
+skills-lock.json
+.agents/

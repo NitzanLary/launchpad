@@ -35,10 +35,15 @@ const PROVIDERS = [
   },
 ] as const;
 
+const VERCEL_GITHUB_APP_URL =
+  "https://github.com/apps/vercel/installations/new";
+
 function ConnectedAccountsInner({
   connections,
+  vercelGitHubConnected,
 }: {
   connections: ConnectionMap;
+  vercelGitHubConnected: boolean | null;
 }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -53,7 +58,15 @@ function ConnectedAccountsInner({
     const error = searchParams.get("error");
     const warning = searchParams.get("warning");
 
-    if (connected) {
+    const vercelGitHub = searchParams.get("vercel_github");
+
+    if (connected && vercelGitHub === "missing") {
+      setNotification({
+        type: "warning",
+        message:
+          "Vercel connected, but the GitHub integration is missing. Install the Vercel GitHub App so LaunchPad can link repos to Vercel for deployments.",
+      });
+    } else if (connected) {
       setNotification({
         type: "success",
         message: `${connected.charAt(0).toUpperCase() + connected.slice(1)} connected successfully.`,
@@ -72,7 +85,7 @@ function ConnectedAccountsInner({
     }
 
     // Clean URL params after reading
-    if (connected || error || warning) {
+    if (connected || error || warning || vercelGitHub) {
       router.replace("/settings", { scroll: false });
     }
   }, [searchParams, router]);
@@ -138,67 +151,87 @@ function ConnectedAccountsInner({
             connection?.tokenExpiresAt &&
             new Date(connection.tokenExpiresAt) < new Date();
 
-          return (
-            <div
-              key={provider.key}
-              className="flex items-center justify-between rounded-xl border border-border bg-card px-5 py-4"
-            >
-              <div className="space-y-0.5">
-                <h3 className="font-medium">{provider.label}</h3>
-                <p className="text-xs text-muted-foreground">
-                  {provider.description}
-                </p>
-                {connection && (
-                  <p className="text-xs text-muted-foreground">
-                    Account: {connection.providerAccountId}
-                    {isExpired && (
-                      <span className="ml-2 text-yellow-400">
-                        (token expired)
-                      </span>
-                    )}
-                  </p>
-                )}
-              </div>
+          const showGitHubWarning =
+            provider.key === "VERCEL" &&
+            connection &&
+            vercelGitHubConnected === false;
 
-              <div className="flex items-center gap-2">
-                {connection ? (
-                  <>
-                    <span className="rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-400">
-                      Connected
+          return (
+            <div key={provider.key} className="space-y-0">
+              <div className="flex items-center justify-between rounded-xl border border-border bg-card px-5 py-4">
+                <div className="space-y-0.5">
+                  <h3 className="font-medium">{provider.label}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    {provider.description}
+                  </p>
+                  {connection && (
+                    <p className="text-xs text-muted-foreground">
+                      Account: {connection.providerAccountId}
+                      {isExpired && (
+                        <span className="ml-2 text-yellow-400">
+                          (token expired)
+                        </span>
+                      )}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {connection ? (
+                    <>
+                      <span className="rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-400">
+                        Connected
+                      </span>
+                      {provider.canDisconnect && (
+                        <button
+                          onClick={() => handleDisconnect(provider.key)}
+                          disabled={disconnecting === provider.key}
+                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-destructive hover:text-destructive disabled:opacity-50"
+                        >
+                          {disconnecting === provider.key
+                            ? "Disconnecting..."
+                            : "Disconnect"}
+                        </button>
+                      )}
+                      {isExpired && provider.connectUrl && (
+                        <a
+                          href={provider.connectUrl}
+                          className="rounded-lg bg-yellow-500/20 px-3 py-1.5 text-xs font-medium text-yellow-400 transition-colors hover:bg-yellow-500/30"
+                        >
+                          Reconnect
+                        </a>
+                      )}
+                    </>
+                  ) : provider.connectUrl ? (
+                    <a
+                      href={provider.connectUrl}
+                      className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                    >
+                      Connect
+                    </a>
+                  ) : (
+                    <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                      Via sign-in
                     </span>
-                    {provider.canDisconnect && (
-                      <button
-                        onClick={() => handleDisconnect(provider.key)}
-                        disabled={disconnecting === provider.key}
-                        className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-destructive hover:text-destructive disabled:opacity-50"
-                      >
-                        {disconnecting === provider.key
-                          ? "Disconnecting..."
-                          : "Disconnect"}
-                      </button>
-                    )}
-                    {isExpired && provider.connectUrl && (
-                      <a
-                        href={provider.connectUrl}
-                        className="rounded-lg bg-yellow-500/20 px-3 py-1.5 text-xs font-medium text-yellow-400 transition-colors hover:bg-yellow-500/30"
-                      >
-                        Reconnect
-                      </a>
-                    )}
-                  </>
-                ) : provider.connectUrl ? (
-                  <a
-                    href={provider.connectUrl}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                  >
-                    Connect
-                  </a>
-                ) : (
-                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-                    Via sign-in
-                  </span>
-                )}
+                  )}
+                </div>
               </div>
+              {showGitHubWarning && (
+                <div className="mx-2 rounded-b-xl border border-t-0 border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+                  <p className="text-xs text-yellow-400">
+                    GitHub integration missing — Vercel needs it to deploy from
+                    your repos.{" "}
+                    <a
+                      href={VERCEL_GITHUB_APP_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline hover:text-yellow-300"
+                    >
+                      Install the Vercel GitHub App
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
           );
         })}
@@ -213,12 +246,17 @@ function ConnectedAccountsInner({
 
 export function ConnectedAccounts({
   connections,
+  vercelGitHubConnected,
 }: {
   connections: ConnectionMap;
+  vercelGitHubConnected: boolean | null;
 }) {
   return (
     <Suspense>
-      <ConnectedAccountsInner connections={connections} />
+      <ConnectedAccountsInner
+        connections={connections}
+        vercelGitHubConnected={vercelGitHubConnected}
+      />
     </Suspense>
   );
 }

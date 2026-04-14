@@ -29,17 +29,19 @@ export const cleanupStalePreviews = inngest.createFunction(
       });
     });
 
-    for (const preview of stalePreviews) {
-      await step.run(`cleanup-${preview.id}`, async () => {
-        // TODO: Implement in Phase 4
-        // Connect to staging DB, DROP SCHEMA preview.schemaName CASCADE
+    await Promise.all(
+      stalePreviews.map((preview) =>
+        step.run(`cleanup-${preview.id}`, async () => {
+          // TODO: Implement in Phase 4
+          // Connect to staging DB, DROP SCHEMA preview.schemaName CASCADE
 
-        await prisma.previewSchema.update({
-          where: { id: preview.id },
-          data: { status: "DELETED" },
-        });
-      });
-    }
+          await prisma.previewSchema.update({
+            where: { id: preview.id },
+            data: { status: "DELETED" },
+          });
+        })
+      )
+    );
 
     return { cleaned: stalePreviews.length };
   }

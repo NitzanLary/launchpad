@@ -48,36 +48,37 @@ export const pipelineStaging = inngest.createFunction(
       });
     });
 
-    // Step 2: Generate and apply migrations
-    await step.run("run-migrations", async () => {
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: { status: "MIGRATING" },
-      });
-
-      // TODO: Implement in Phase 5
-      // 1. Fetch schema.prisma from GitHub
-      // 2. Run prisma migrate diff against staging DB
-      // 3. If diff exists, create migration file
-      // 4. Commit migration file to repo via GitHub API
-      // 5. Run prisma migrate deploy
-    });
-
-    // Step 3: Clean up any preview schemas for merged branches
-    await step.run("cleanup-previews", async () => {
-      // Find and drop preview schemas for the merged branch
-      const previews = await prisma.previewSchema.findMany({
-        where: { projectId, status: "ACTIVE" },
-      });
-
-      for (const preview of previews) {
-        // TODO: DROP SCHEMA in staging DB
-        await prisma.previewSchema.update({
-          where: { id: preview.id },
-          data: { status: "DELETED" },
+    // Steps 2-3: Run migrations + clean up previews in parallel
+    await Promise.all([
+      step.run("run-migrations", async () => {
+        await prisma.deploy.update({
+          where: { id: deployId },
+          data: { status: "MIGRATING" },
         });
-      }
-    });
+
+        // TODO: Implement in Phase 5
+        // 1. Fetch schema.prisma from GitHub
+        // 2. Run prisma migrate diff against staging DB
+        // 3. If diff exists, create migration file
+        // 4. Commit migration file to repo via GitHub API
+        // 5. Run prisma migrate deploy
+      }),
+
+      step.run("cleanup-previews", async () => {
+        // Find and drop preview schemas for the merged branch
+        const previews = await prisma.previewSchema.findMany({
+          where: { projectId, status: "ACTIVE" },
+        });
+
+        for (const preview of previews) {
+          // TODO: DROP SCHEMA in staging DB
+          await prisma.previewSchema.update({
+            where: { id: preview.id },
+            data: { status: "DELETED" },
+          });
+        }
+      }),
+    ]);
 
     // Step 4: Deploy to Vercel staging
     await step.run("trigger-vercel-deploy", async () => {
@@ -90,8 +91,10 @@ export const pipelineStaging = inngest.createFunction(
       // Trigger Vercel deployment to staging environment
     });
 
-    // Step 5: Wait and verify
-    await step.sleep("wait-for-vercel", "10s");
+    // Step 5: Wait for Vercel deploy
+    // TODO: Replace with Vercel deployment webhook via step.waitForEvent
+    // or polling. Vercel builds typically take 60-180s.
+    await step.sleep("wait-for-vercel", "90s");
 
     await step.run("finalize-deploy", async () => {
       const staging = await prisma.environment.findFirst({

@@ -21,16 +21,11 @@ import {
  *
  * Steps:
  *  1. Validate prerequisites (OAuth connections, Supabase slots, org ID)
- *  2. Create GitHub repo
- *  3. Create Supabase staging project
- *  4. Create Supabase production project
- *  5. Wait for Supabase staging ready + fetch credentials
- *  6. Wait for Supabase production ready + fetch credentials
- *  7. Create Vercel project linked to GitHub
- *  8. Configure Vercel env vars
- *  9. Push scaffolded template to GitHub
- * 10. Register GitHub webhook
- * 11. Finalize project record → ACTIVE
+ *  2-4. [parallel] Create GitHub repo + Supabase staging + Supabase production
+ *  5. Wait for both Supabase projects ready + fetch credentials
+ *  6. Create Vercel project + configure env vars
+ *  7-8. [parallel] Push scaffolded template + register GitHub webhook
+ *  9. Finalize project record → ACTIVE
  */
 export const projectCreate = inngest.createFunction(
   {
@@ -113,6 +108,21 @@ export const projectCreate = inngest.createFunction(
           );
         }
 
+        // Safety net: verify Vercel has GitHub integration
+        // (primary check is in POST /api/projects, but re-check here in case of race)
+        const { accessToken: vercelToken } = await getProviderToken(
+          userId,
+          "VERCEL"
+        );
+        const hasGitHub = await new VercelClient(
+          vercelToken
+        ).hasGitHubIntegration();
+        if (!hasGitHub) {
+          throw new Error(
+            "Vercel does not have the GitHub integration installed. Please install the Vercel GitHub App at https://github.com/apps/vercel and try again."
+          );
+        }
+
         // Validate Supabase has free slots
         const { accessToken } = await getProviderToken(userId, "SUPABASE");
         const supabase = new SupabaseClient(accessToken);
@@ -136,74 +146,69 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Step 2: Create GitHub repo ──────────────────────────────────────────
+    // ── Steps 2-4: Create GitHub repo + both Supabase projects in parallel ─
 
-    const repo = await step.run("create-github-repo", async () => {
-      // Idempotency: check if repo was already created
-      const project = await prisma.project.findUniqueOrThrow({
-        where: { id: projectId },
-      });
-      if (project.githubRepoId) {
+    const [repo, staging, production] = await Promise.all([
+      step.run("create-github-repo", async () => {
+        // Idempotency: check if repo was already created
+        const project = await prisma.project.findUniqueOrThrow({
+          where: { id: projectId },
+        });
+        if (project.githubRepoId) {
+          return {
+            id: project.githubRepoId,
+            url: project.githubRepoUrl!,
+            owner: project.githubOwner!,
+            fullName: `${project.githubOwner}/${projectSlug}`,
+          };
+        }
+
+        const { accessToken } = await getProviderToken(userId, "GITHUB");
+        const github = new GitHubClient(accessToken);
+
+        const user = await github.getUser();
+        const result = await github.createRepo(projectSlug, true);
+
+        // Persist immediately for idempotency and cleanup
+        await prisma.project.update({
+          where: { id: projectId },
+          data: {
+            githubRepoId: result.id,
+            githubRepoUrl: result.html_url,
+            githubOwner: user.login,
+          },
+        });
+
         return {
-          id: project.githubRepoId,
-          url: project.githubRepoUrl!,
-          owner: project.githubOwner!,
-          fullName: `${project.githubOwner}/${projectSlug}`,
+          id: result.id,
+          url: result.html_url,
+          owner: user.login,
+          fullName: result.full_name,
         };
-      }
+      }),
 
-      const { accessToken } = await getProviderToken(userId, "GITHUB");
-      const github = new GitHubClient(accessToken);
+      step.run("create-supabase-staging", async () => {
+        const { accessToken } = await getProviderToken(userId, "SUPABASE");
+        const supabase = new SupabaseClient(accessToken);
 
-      const user = await github.getUser();
-      const result = await github.createRepo(projectSlug, true);
+        const dbPassword = randomBytes(24).toString("base64url");
+        const result = await supabase.createProject(
+          `${projectSlug}-staging`,
+          supabaseOrgId,
+          dbPassword,
+          "us-east-1"
+        );
 
-      // Persist immediately for idempotency and cleanup
-      await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          githubRepoId: result.id,
-          githubRepoUrl: result.html_url,
-          githubOwner: user.login,
-        },
-      });
+        // Persist ref for cleanup on failure
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { supabaseStagingRef: result.id },
+        });
 
-      return {
-        id: result.id,
-        url: result.html_url,
-        owner: user.login,
-        fullName: result.full_name,
-      };
-    });
+        return { ref: result.id, password: dbPassword, region: "us-east-1" };
+      }),
 
-    // ── Step 3: Create Supabase staging project ─────────────────────────────
-
-    const staging = await step.run("create-supabase-staging", async () => {
-      const { accessToken } = await getProviderToken(userId, "SUPABASE");
-      const supabase = new SupabaseClient(accessToken);
-
-      const dbPassword = randomBytes(24).toString("base64url");
-      const result = await supabase.createProject(
-        `${projectSlug}-staging`,
-        supabaseOrgId,
-        dbPassword,
-        "us-east-1"
-      );
-
-      // Persist ref for cleanup on failure
-      await prisma.project.update({
-        where: { id: projectId },
-        data: { supabaseStagingRef: result.id },
-      });
-
-      return { ref: result.id, password: dbPassword, region: "us-east-1" };
-    });
-
-    // ── Step 4: Create Supabase production project ──────────────────────────
-
-    const production = await step.run(
-      "create-supabase-production",
-      async () => {
+      step.run("create-supabase-production", async () => {
         const { accessToken } = await getProviderToken(userId, "SUPABASE");
         const supabase = new SupabaseClient(accessToken);
 
@@ -222,237 +227,218 @@ export const projectCreate = inngest.createFunction(
         });
 
         return { ref: result.id, password: dbPassword, region: "us-east-1" };
-      }
-    );
+      }),
+    ]);
 
-    // ── Wait for Supabase projects to provision (~60s) ──────────────────────
+    // ── Wait for Supabase projects to provision ──────────────────────────────
 
-    await step.sleep("wait-supabase-provision", "45s");
+    await step.sleep("wait-supabase-provision", "30s");
 
-    // ── Step 5: Check staging ready + fetch credentials ─────────────────────
+    // ── Step 5: Check both Supabase projects ready + fetch credentials ──────
 
-    const stagingDb = await step.run(
-      "check-supabase-staging-ready",
+    const { stagingDb, prodDb } = await step.run(
+      "check-supabase-ready",
       async () => {
         const { accessToken } = await getProviderToken(userId, "SUPABASE");
         const supabase = new SupabaseClient(accessToken);
 
         const projects = await supabase.listProjects();
-        const project = projects.find((p) => p.id === staging.ref);
+        const stagingProject = projects.find((p) => p.id === staging.ref);
+        const prodProject = projects.find((p) => p.id === production.ref);
 
-        if (!project || project.status !== "ACTIVE_HEALTHY") {
+        if (!stagingProject || stagingProject.status !== "ACTIVE_HEALTHY") {
           throw new Error(
-            `Staging project not ready yet (status: ${project?.status ?? "not found"}). Retrying...`
+            `Staging project not ready yet (status: ${stagingProject?.status ?? "not found"}). Retrying...`
+          );
+        }
+        if (!prodProject || prodProject.status !== "ACTIVE_HEALTHY") {
+          throw new Error(
+            `Production project not ready yet (status: ${prodProject?.status ?? "not found"}). Retrying...`
           );
         }
 
-        const keys = await supabase.getProjectApiKeys(staging.ref);
-        const anonKey = keys.find((k) => k.name === "anon")?.api_key;
-        const serviceKey = keys.find(
+        const [stagingKeys, prodKeys] = await Promise.all([
+          supabase.getProjectApiKeys(staging.ref),
+          supabase.getProjectApiKeys(production.ref),
+        ]);
+
+        const stagingAnon = stagingKeys.find((k) => k.name === "anon")?.api_key;
+        const stagingService = stagingKeys.find(
+          (k) => k.name === "service_role"
+        )?.api_key;
+        const prodAnon = prodKeys.find((k) => k.name === "anon")?.api_key;
+        const prodService = prodKeys.find(
           (k) => k.name === "service_role"
         )?.api_key;
 
-        if (!anonKey || !serviceKey) {
+        if (!stagingAnon || !stagingService) {
           throw new Error("Staging API keys not available yet. Retrying...");
         }
+        if (!prodAnon || !prodService) {
+          throw new Error("Production API keys not available yet. Retrying...");
+        }
 
         return {
-          projectId: staging.ref,
-          host: `db.${staging.ref}.supabase.co`,
-          url: `https://${staging.ref}.supabase.co`,
-          anonKey,
-          serviceKey,
-          region: project.region,
+          stagingDb: {
+            projectId: staging.ref,
+            host: `db.${staging.ref}.supabase.co`,
+            url: `https://${staging.ref}.supabase.co`,
+            anonKey: stagingAnon,
+            serviceKey: stagingService,
+            region: stagingProject.region,
+          },
+          prodDb: {
+            projectId: production.ref,
+            host: `db.${production.ref}.supabase.co`,
+            url: `https://${production.ref}.supabase.co`,
+            anonKey: prodAnon,
+            serviceKey: prodService,
+            region: prodProject.region,
+          },
         };
       }
     );
 
-    // ── Step 6: Check production ready + fetch credentials ──────────────────
-
-    const prodDb = await step.run(
-      "check-supabase-production-ready",
-      async () => {
-        const { accessToken } = await getProviderToken(userId, "SUPABASE");
-        const supabase = new SupabaseClient(accessToken);
-
-        const projects = await supabase.listProjects();
-        const project = projects.find((p) => p.id === production.ref);
-
-        if (!project || project.status !== "ACTIVE_HEALTHY") {
-          throw new Error(
-            `Production project not ready yet (status: ${project?.status ?? "not found"}). Retrying...`
-          );
-        }
-
-        const keys = await supabase.getProjectApiKeys(production.ref);
-        const anonKey = keys.find((k) => k.name === "anon")?.api_key;
-        const serviceKey = keys.find(
-          (k) => k.name === "service_role"
-        )?.api_key;
-
-        if (!anonKey || !serviceKey) {
-          throw new Error(
-            "Production API keys not available yet. Retrying..."
-          );
-        }
-
-        return {
-          projectId: production.ref,
-          host: `db.${production.ref}.supabase.co`,
-          url: `https://${production.ref}.supabase.co`,
-          anonKey,
-          serviceKey,
-          region: project.region,
-        };
-      }
-    );
-
-    // ── Step 7: Create Vercel project ───────────────────────────────────────
+    // ── Step 6: Create Vercel project + configure env vars ─────────────────
 
     const vercelProject = await step.run(
-      "create-vercel-project",
+      "create-and-configure-vercel",
       async () => {
-        const project = await prisma.project.findUniqueOrThrow({
-          where: { id: projectId },
-        });
-        if (project.vercelProjectId) {
-          return {
-            id: project.vercelProjectId,
-            url: project.vercelProjectUrl!,
-          };
-        }
-
         const { accessToken } = await getProviderToken(userId, "VERCEL");
         const vercel = new VercelClient(accessToken);
 
-        const result = await vercel.createProject(projectSlug, repo.fullName);
-
-        await prisma.project.update({
+        // Idempotency: check if Vercel project was already created
+        const project = await prisma.project.findUniqueOrThrow({
           where: { id: projectId },
-          data: {
-            vercelProjectId: result.id,
-            vercelProjectUrl: `https://${result.name}.vercel.app`,
-          },
         });
 
-        return {
-          id: result.id,
-          url: `https://${result.name}.vercel.app`,
-        };
+        let vercelId = project.vercelProjectId;
+        let vercelUrl = project.vercelProjectUrl;
+
+        if (!vercelId) {
+          const result = await vercel.createProject(
+            projectSlug,
+            repo.fullName
+          );
+          vercelId = result.id;
+          vercelUrl = `https://${result.name}.vercel.app`;
+
+          await prisma.project.update({
+            where: { id: projectId },
+            data: {
+              vercelProjectId: vercelId,
+              vercelProjectUrl: vercelUrl,
+            },
+          });
+        }
+
+        // Configure env vars (idempotent — Vercel overwrites)
+        const stagingDbUrl = buildDatabaseUrl(
+          staging.ref,
+          staging.password,
+          staging.region
+        );
+        const prodDbUrl = buildDatabaseUrl(
+          production.ref,
+          production.password,
+          production.region
+        );
+
+        const envVars = [
+          // Staging/Preview environment variables
+          {
+            key: "DATABASE_URL",
+            value: stagingDbUrl,
+            target: ["preview", "development"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "encrypted" as const,
+          },
+          {
+            key: "NEXT_PUBLIC_SUPABASE_URL",
+            value: stagingDb.url,
+            target: ["preview", "development"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "plain" as const,
+          },
+          {
+            key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            value: stagingDb.anonKey,
+            target: ["preview", "development"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "plain" as const,
+          },
+          {
+            key: "SUPABASE_SERVICE_ROLE_KEY",
+            value: stagingDb.serviceKey,
+            target: ["preview", "development"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "encrypted" as const,
+          },
+          // Production environment variables
+          {
+            key: "DATABASE_URL",
+            value: prodDbUrl,
+            target: ["production"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "encrypted" as const,
+          },
+          {
+            key: "NEXT_PUBLIC_SUPABASE_URL",
+            value: prodDb.url,
+            target: ["production"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "plain" as const,
+          },
+          {
+            key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            value: prodDb.anonKey,
+            target: ["production"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "plain" as const,
+          },
+          {
+            key: "SUPABASE_SERVICE_ROLE_KEY",
+            value: prodDb.serviceKey,
+            target: ["production"] as (
+              | "production"
+              | "preview"
+              | "development"
+            )[],
+            type: "encrypted" as const,
+          },
+        ];
+
+        await vercel.setEnvVars(vercelId, envVars);
+
+        return { id: vercelId, url: vercelUrl! };
       }
     );
 
-    // ── Step 8: Configure Vercel environment variables ──────────────────────
+    // ── Steps 7-8: Push template + register webhook in parallel ────────────
 
-    await step.run("configure-vercel-env", async () => {
-      const { accessToken } = await getProviderToken(userId, "VERCEL");
-      const vercel = new VercelClient(accessToken);
-
-      // Build DATABASE_URLs using passwords from creation steps
-      const stagingDbUrl = buildDatabaseUrl(
-        staging.ref,
-        staging.password,
-        staging.region
-      );
-      const prodDbUrl = buildDatabaseUrl(
-        production.ref,
-        production.password,
-        production.region
-      );
-
-      const envVars = [
-        // Staging/Preview environment variables
-        {
-          key: "DATABASE_URL",
-          value: stagingDbUrl,
-          target: ["preview", "development"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "encrypted" as const,
-        },
-        {
-          key: "NEXT_PUBLIC_SUPABASE_URL",
-          value: stagingDb.url,
-          target: ["preview", "development"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "plain" as const,
-        },
-        {
-          key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-          value: stagingDb.anonKey,
-          target: ["preview", "development"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "plain" as const,
-        },
-        {
-          key: "SUPABASE_SERVICE_ROLE_KEY",
-          value: stagingDb.serviceKey,
-          target: ["preview", "development"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "encrypted" as const,
-        },
-        // Production environment variables
-        {
-          key: "DATABASE_URL",
-          value: prodDbUrl,
-          target: ["production"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "encrypted" as const,
-        },
-        {
-          key: "NEXT_PUBLIC_SUPABASE_URL",
-          value: prodDb.url,
-          target: ["production"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "plain" as const,
-        },
-        {
-          key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-          value: prodDb.anonKey,
-          target: ["production"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "plain" as const,
-        },
-        {
-          key: "SUPABASE_SERVICE_ROLE_KEY",
-          value: prodDb.serviceKey,
-          target: ["production"] as (
-            | "production"
-            | "preview"
-            | "development"
-          )[],
-          type: "encrypted" as const,
-        },
-      ];
-
-      await vercel.setEnvVars(vercelProject.id, envVars);
-    });
-
-    // ── Step 9: Push scaffolded template to GitHub ──────────────────────────
-
-    const { claudeMdPlatformHash } = await step.run(
-      "push-template",
-      async () => {
+    const [{ claudeMdPlatformHash }] = await Promise.all([
+      step.run("push-template", async () => {
         const { accessToken } = await getProviderToken(userId, "GITHUB");
         const github = new GitHubClient(accessToken);
 
@@ -476,46 +462,44 @@ export const projectCreate = inngest.createFunction(
         );
 
         return { claudeMdPlatformHash };
-      }
-    );
+      }),
 
-    // ── Step 10: Register GitHub webhook ────────────────────────────────────
+      step.run("register-webhook", async () => {
+        const project = await prisma.project.findUniqueOrThrow({
+          where: { id: projectId },
+        });
+        if (project.githubWebhookId) {
+          return { id: project.githubWebhookId };
+        }
 
-    const webhook = await step.run("register-webhook", async () => {
-      const project = await prisma.project.findUniqueOrThrow({
-        where: { id: projectId },
-      });
-      if (project.githubWebhookId) {
-        return { id: project.githubWebhookId };
-      }
+        const { accessToken } = await getProviderToken(userId, "GITHUB");
+        const github = new GitHubClient(accessToken);
 
-      const { accessToken } = await getProviderToken(userId, "GITHUB");
-      const github = new GitHubClient(accessToken);
+        const webhookSecret = randomBytes(32).toString("hex");
+        const appUrl =
+          process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+        const webhookUrl = `${appUrl}/api/webhooks/github`;
 
-      const webhookSecret = randomBytes(32).toString("hex");
-      const appUrl =
-        process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-      const webhookUrl = `${appUrl}/api/webhooks/github`;
+        const result = await github.createWebhook(
+          repo.owner,
+          projectSlug,
+          webhookUrl,
+          webhookSecret
+        );
 
-      const result = await github.createWebhook(
-        repo.owner,
-        projectSlug,
-        webhookUrl,
-        webhookSecret
-      );
+        await prisma.project.update({
+          where: { id: projectId },
+          data: {
+            githubWebhookId: result.id,
+            webhookSecretEnc: encrypt(webhookSecret),
+          },
+        });
 
-      await prisma.project.update({
-        where: { id: projectId },
-        data: {
-          githubWebhookId: result.id,
-          webhookSecretEnc: encrypt(webhookSecret),
-        },
-      });
+        return { id: result.id };
+      }),
+    ]);
 
-      return { id: result.id };
-    });
-
-    // ── Step 11: Finalize project record ────────────────────────────────────
+    // ── Step 9: Finalize project record ─────────────────────────────────────
 
     await step.run("finalize-project", async () => {
       await prisma.$transaction([

@@ -64,8 +64,8 @@ export const pipelineProduction = inngest.createFunction(
       // Use Vercel API to promote staging build artifact to production
     });
 
-    // Step 4: Health check
-    await step.sleep("wait-for-deploy", "10s");
+    // Step 4: Health check — promotions deploy existing build artifacts, faster than full builds
+    await step.sleep("wait-for-deploy", "30s");
 
     const healthy = await step.run("health-check", async () => {
       await prisma.deploy.update({

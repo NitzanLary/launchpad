@@ -6,6 +6,9 @@ export const ERROR_CODES = {
     "You already have a LaunchPad project. Free-tier users are limited to 1 project. Upgrade to LaunchPad Pro for multiple projects.",
   PROJECT_NAME_TAKEN: "A project with this name already exists.",
 
+  VERCEL_GITHUB_NOT_CONNECTED:
+    "Your Vercel account is not connected to GitHub. LaunchPad needs this to link your GitHub repos to Vercel for automatic deployments.",
+
   // Preview limits
   PREVIEW_LIMIT_REACHED:
     "You have 5 active preview environments, which is the maximum for your plan. Merge or delete a branch to free up a slot, or upgrade your Supabase plan for more.",

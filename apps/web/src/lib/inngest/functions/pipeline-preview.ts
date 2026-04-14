@@ -121,7 +121,9 @@ export const pipelinePreview = inngest.createFunction(
     });
 
     // Step 5: Wait for Vercel deploy
-    await step.sleep("wait-for-vercel", "10s");
+    // TODO: Replace with Vercel deployment webhook via step.waitForEvent
+    // or polling. Vercel builds typically take 60-180s.
+    await step.sleep("wait-for-vercel", "90s");
 
     // Step 6: Verify and finalize
     await step.run("finalize-deploy", async () => {

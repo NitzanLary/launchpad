@@ -1,5 +1,7 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { decrypt } from "@/lib/encryption";
+import { VercelClient } from "@/lib/integrations";
 import { ConnectedAccounts } from "./connected-accounts";
 
 export default async function SettingsPage() {
@@ -9,6 +11,7 @@ export default async function SettingsPage() {
     select: {
       provider: true,
       providerAccountId: true,
+      accessTokenEnc: true,
       tokenExpiresAt: true,
       updatedAt: true,
     },
@@ -25,11 +28,27 @@ export default async function SettingsPage() {
     ])
   );
 
+  // Check if Vercel has GitHub integration connected
+  let vercelGitHubConnected: boolean | null = null;
+  const vercelConn = connections.find((c) => c.provider === "VERCEL");
+  if (vercelConn) {
+    try {
+      const token = decrypt(new Uint8Array(vercelConn.accessTokenEnc));
+      const vercel = new VercelClient(token);
+      vercelGitHubConnected = await vercel.hasGitHubIntegration();
+    } catch {
+      // Token invalid or API error — leave as null (unknown)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-8">
       <h1 className="text-2xl font-bold">Settings</h1>
 
-      <ConnectedAccounts connections={connectionMap} />
+      <ConnectedAccounts
+        connections={connectionMap}
+        vercelGitHubConnected={vercelGitHubConnected}
+      />
 
       {/* Danger Zone */}
       <section className="space-y-4">
