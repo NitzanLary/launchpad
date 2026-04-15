@@ -87,7 +87,7 @@ export async function GET(request: NextRequest) {
     // Check if Vercel has GitHub connected — warn user if not
     let redirectParams = "connected=vercel";
     try {
-      const vercel = new VercelClient(tokens.access_token);
+      const vercel = new VercelClient(tokens.access_token, tokens.team_id);
       const hasGitHub = await vercel.hasGitHubIntegration();
       if (!hasGitHub) {
         redirectParams = "connected=vercel&vercel_github=missing";

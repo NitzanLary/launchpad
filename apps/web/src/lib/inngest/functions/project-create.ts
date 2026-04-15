@@ -66,8 +66,8 @@ export const projectCreate = inngest.createFunction(
       // Clean up Vercel project
       try {
         if (project.vercelProjectId) {
-          const { accessToken } = await getProviderToken(userId, "VERCEL");
-          const vercel = new VercelClient(accessToken);
+          const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
+          const vercel = new VercelClient(accessToken, providerAccountId);
           await vercel.deleteProject(project.vercelProjectId).catch(() => {});
         }
       } catch {
@@ -110,12 +110,12 @@ export const projectCreate = inngest.createFunction(
 
         // Safety net: verify Vercel has GitHub integration
         // (primary check is in POST /api/projects, but re-check here in case of race)
-        const { accessToken: vercelToken } = await getProviderToken(
+        const { accessToken: vercelToken, providerAccountId: vercelAccountId } = await getProviderToken(
           userId,
           "VERCEL"
         );
         const hasGitHub = await new VercelClient(
-          vercelToken
+          vercelToken, vercelAccountId
         ).hasGitHubIntegration();
         if (!hasGitHub) {
           throw new Error(
@@ -304,8 +304,8 @@ export const projectCreate = inngest.createFunction(
     const vercelProject = await step.run(
       "create-and-configure-vercel",
       async () => {
-        const { accessToken } = await getProviderToken(userId, "VERCEL");
-        const vercel = new VercelClient(accessToken);
+        const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
+        const vercel = new VercelClient(accessToken, providerAccountId);
 
         // Idempotency: check if Vercel project was already created
         const project = await prisma.project.findUniqueOrThrow({

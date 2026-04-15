@@ -15,8 +15,8 @@ export async function GET() {
   }
 
   try {
-    const { accessToken } = await getProviderToken(session.user.id, "VERCEL");
-    const vercel = new VercelClient(accessToken);
+    const { accessToken, providerAccountId } = await getProviderToken(session.user.id, "VERCEL");
+    const vercel = new VercelClient(accessToken, providerAccountId);
     const connected = await vercel.hasGitHubIntegration();
     return NextResponse.json({ connected });
   } catch (err) {

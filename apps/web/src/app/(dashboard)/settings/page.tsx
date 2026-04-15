@@ -34,7 +34,7 @@ export default async function SettingsPage() {
   if (vercelConn) {
     try {
       const token = decrypt(new Uint8Array(vercelConn.accessTokenEnc));
-      const vercel = new VercelClient(token);
+      const vercel = new VercelClient(token, vercelConn.providerAccountId);
       vercelGitHubConnected = await vercel.hasGitHubIntegration();
     } catch {
       // Token invalid or API error — leave as null (unknown)

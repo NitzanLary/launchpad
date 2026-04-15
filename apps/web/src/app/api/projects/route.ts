@@ -106,11 +106,11 @@ export async function POST(request: NextRequest) {
   // Check that Vercel has the GitHub integration installed.
   // Without it, Vercel can't link to the user's GitHub repos and project creation will fail.
   try {
-    const { accessToken: vercelToken } = await getProviderToken(
+    const { accessToken: vercelToken, providerAccountId: vercelAccountId } = await getProviderToken(
       session.user.id,
       "VERCEL"
     );
-    const vercel = new VercelClient(vercelToken);
+    const vercel = new VercelClient(vercelToken, vercelAccountId);
     const hasGitHub = await vercel.hasGitHubIntegration();
     if (!hasGitHub) {
       return NextResponse.json(

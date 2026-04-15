@@ -3,15 +3,23 @@ const VERCEL_API = "https://api.vercel.com";
 /**
  * Vercel API client for LaunchPad operations.
  * Used for: project creation, deployment management, env var injection.
+ *
+ * Integration OAuth tokens are team-scoped — pass `teamId` (from the
+ * token response's `team_id`) so every request targets the correct team.
  */
 export class VercelClient {
-  constructor(private accessToken: string) {}
+  constructor(private accessToken: string, private teamId?: string) {}
 
   private async request<T>(
     path: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const response = await fetch(`${VERCEL_API}${path}`, {
+    const url = new URL(`${VERCEL_API}${path}`);
+    if (this.teamId) {
+      url.searchParams.set("teamId", this.teamId);
+    }
+
+    const response = await fetch(url.toString(), {
       ...options,
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
