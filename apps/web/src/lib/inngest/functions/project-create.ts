@@ -301,6 +301,49 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
+    // ── Step 5b: Wait until Vercel's GitHub App has synced the new repo ────
+    //
+    // The Vercel GitHub App maintains a cached list of repos it has access to.
+    // Brand-new repos take a few seconds to a couple of minutes to show up —
+    // even when the App is installed with "All repositories" permission.
+    // If we try to create the Vercel project before the sync completes,
+    // /v10/projects returns "install GitHub integration first" even though it
+    // IS installed. Poll /v1/integrations/search-repo until the repo appears.
+
+    await step.run("wait-vercel-sees-github-repo", async () => {
+      const { accessToken, providerAccountId } = await getProviderToken(
+        userId,
+        "VERCEL"
+      );
+      const vercel = new VercelClient(accessToken, providerAccountId);
+
+      const namespaces = await vercel.listGitNamespaces("github");
+      if (namespaces.length === 0) {
+        throw new Error(
+          "Vercel GitHub App is not installed. Please install it at https://github.com/apps/vercel and reconnect Vercel in Settings."
+        );
+      }
+
+      const maxAttempts = 18; // ~90s @ 5s intervals
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        for (const ns of namespaces) {
+          const repos = await vercel.searchGitRepo({
+            namespaceId: ns.id,
+            query: projectSlug,
+          });
+          if (repos.some((r) => r.id === repo.id)) {
+            return { synced: true, attempts: attempt + 1 };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+
+      throw new Error(
+        `Vercel GitHub App has not synced the new repo "${repo.fullName}" after ~90s. ` +
+          `If you installed the App with "Only select repositories", grant it access to this repo or switch to "All repositories".`
+      );
+    });
+
     // ── Step 6: Create Vercel project + configure env vars ─────────────────
 
     const vercelProject = await step.run(
@@ -318,10 +361,9 @@ export const projectCreate = inngest.createFunction(
         let vercelUrl = project.vercelProjectUrl;
 
         if (!vercelId) {
-          const result = await vercel.createProject(
-            projectSlug,
-            repo.fullName
-          );
+          const result = await vercel.createProject(projectSlug, {
+            repoId: repo.id,
+          });
           vercelId = result.id;
           vercelUrl = `https://${result.name}.vercel.app`;
 

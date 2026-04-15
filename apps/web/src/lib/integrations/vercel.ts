@@ -51,29 +51,33 @@ export class VercelClient {
   }
 
   /**
+   * List Git namespaces (installed Git provider accounts) visible to this token.
+   * User-scoped endpoint — must omit `teamId`.
+   */
+  async listGitNamespaces(
+    provider: "github" | "gitlab" | "bitbucket" = "github"
+  ): Promise<Array<{ id: number | string; provider: string; name?: string }>> {
+    const result = await this.request<
+      Array<{ id: number | string; provider: string; name?: string }>
+    >("/v1/integrations/git-namespaces", {
+      skipTeamId: true,
+      query: { provider },
+    });
+    if (!Array.isArray(result)) {
+      throw new Error(
+        `Unexpected git-namespaces response shape: ${JSON.stringify(result)}`
+      );
+    }
+    return result;
+  }
+
+  /**
    * Check if the Vercel account has the GitHub integration (Vercel GitHub App) installed.
    * Returns true/false when known, or null when detection failed (don't show a warning).
-   *
-   * The `git-namespaces` endpoint is user-scoped (not team-scoped) per the Vercel
-   * OpenAPI spec — its only query params are `host` and `provider`. Passing `teamId`
-   * causes Vercel to return an empty array, which is why the previous version always
-   * said "not connected" even when the app was installed.
    */
   async hasGitHubIntegration(): Promise<boolean | null> {
     try {
-      const namespaces = await this.request<
-        Array<{ provider: string }> | { error?: unknown }
-      >("/v1/integrations/git-namespaces", {
-        skipTeamId: true,
-        query: { provider: "github" },
-      });
-      if (!Array.isArray(namespaces)) {
-        console.error(
-          "[vercel.hasGitHubIntegration] unexpected response shape:",
-          namespaces
-        );
-        return null;
-      }
+      const namespaces = await this.listGitNamespaces("github");
       return namespaces.some((ns) => ns.provider.startsWith("github"));
     } catch (err) {
       console.error("[vercel.hasGitHubIntegration] request failed:", err);
@@ -81,20 +85,58 @@ export class VercelClient {
     }
   }
 
-  /** Create a new project linked to a GitHub repo. */
+  /**
+   * Search for repos visible to the Vercel Git integration for a given namespace.
+   * Used to verify a newly-created GitHub repo has been picked up by Vercel's
+   * GitHub App cache before trying to link it to a Vercel project.
+   */
+  async searchGitRepo(params: {
+    namespaceId: number | string;
+    query: string;
+    provider?: "github" | "gitlab" | "bitbucket";
+  }): Promise<
+    Array<{ id: number; slug: string; name: string; namespace: string; url: string }>
+  > {
+    const result = await this.request<{
+      repos?: Array<{
+        id: number;
+        slug: string;
+        name: string;
+        namespace: string;
+        url: string;
+      }>;
+    }>("/v1/integrations/search-repo", {
+      skipTeamId: true,
+      query: {
+        provider: params.provider ?? "github",
+        namespaceId: String(params.namespaceId),
+        query: params.query,
+      },
+    });
+    return result.repos ?? [];
+  }
+
+  /**
+   * Create a new project linked to a GitHub repo.
+   * Prefer `repoId` (numeric GitHub repo id) over `repo` (full name) — the
+   * numeric id bypasses slug resolution against Vercel's cached namespace list,
+   * which is unreliable for very recently created repos.
+   */
   async createProject(
     name: string,
-    githubRepoFullName: string
+    gitRepo: { repoId: number } | { repoFullName: string }
   ): Promise<{ id: string; name: string }> {
+    const gitRepository =
+      "repoId" in gitRepo
+        ? { type: "github" as const, repoId: gitRepo.repoId }
+        : { type: "github" as const, repo: gitRepo.repoFullName };
+
     return this.request("/v10/projects", {
       method: "POST",
       body: JSON.stringify({
         name,
         framework: "nextjs",
-        gitRepository: {
-          type: "github",
-          repo: githubRepoFullName,
-        },
+        gitRepository,
       }),
     });
   }
