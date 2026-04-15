@@ -41,10 +41,10 @@ export class VercelClient {
   /** Check if the Vercel account has the GitHub integration (Vercel GitHub App) installed. */
   async hasGitHubIntegration(): Promise<boolean> {
     try {
-      const data = await this.request<{
-        namespaces: Array<{ provider: string }>;
-      }>("/v1/integrations/git-namespaces");
-      return data.namespaces.some((ns) => ns.provider === "github");
+      const namespaces = await this.request<
+        Array<{ provider: string }>
+      >("/v1/integrations/git-namespaces");
+      return namespaces.some((ns) => ns.provider.startsWith("github"));
     } catch {
       return false;
     }
