@@ -86,37 +86,6 @@ export class VercelClient {
   }
 
   /**
-   * Search for repos visible to the Vercel Git integration for a given namespace.
-   * Used to verify a newly-created GitHub repo has been picked up by Vercel's
-   * GitHub App cache before trying to link it to a Vercel project.
-   */
-  async searchGitRepo(params: {
-    namespaceId: number | string;
-    query: string;
-    provider?: "github" | "gitlab" | "bitbucket";
-  }): Promise<
-    Array<{ id: number; slug: string; name: string; namespace: string; url: string }>
-  > {
-    const result = await this.request<{
-      repos?: Array<{
-        id: number;
-        slug: string;
-        name: string;
-        namespace: string;
-        url: string;
-      }>;
-    }>("/v1/integrations/search-repo", {
-      skipTeamId: true,
-      query: {
-        provider: params.provider ?? "github",
-        namespaceId: String(params.namespaceId),
-        query: params.query,
-      },
-    });
-    return result.repos ?? [];
-  }
-
-  /**
    * Create a new project linked to a GitHub repo.
    * Prefer `repoId` (numeric GitHub repo id) over `repo` (full name) — the
    * numeric id bypasses slug resolution against Vercel's cached namespace list,

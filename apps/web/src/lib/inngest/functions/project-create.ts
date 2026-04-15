@@ -301,48 +301,16 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Step 5b: Wait until Vercel's GitHub App has synced the new repo ────
+    // ── Step 5b: Let Vercel's GitHub App sync the new repo ─────────────────
     //
-    // The Vercel GitHub App maintains a cached list of repos it has access to.
-    // Brand-new repos take a few seconds to a couple of minutes to show up —
-    // even when the App is installed with "All repositories" permission.
-    // If we try to create the Vercel project before the sync completes,
-    // /v10/projects returns "install GitHub integration first" even though it
-    // IS installed. Poll /v1/integrations/search-repo until the repo appears.
-
-    await step.run("wait-vercel-sees-github-repo", async () => {
-      const { accessToken, providerAccountId } = await getProviderToken(
-        userId,
-        "VERCEL"
-      );
-      const vercel = new VercelClient(accessToken, providerAccountId);
-
-      const namespaces = await vercel.listGitNamespaces("github");
-      if (namespaces.length === 0) {
-        throw new Error(
-          "Vercel GitHub App is not installed. Please install it at https://github.com/apps/vercel and reconnect Vercel in Settings."
-        );
-      }
-
-      const maxAttempts = 18; // ~90s @ 5s intervals
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        for (const ns of namespaces) {
-          const repos = await vercel.searchGitRepo({
-            namespaceId: ns.id,
-            query: projectSlug,
-          });
-          if (repos.some((r) => r.id === repo.id)) {
-            return { synced: true, attempts: attempt + 1 };
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-
-      throw new Error(
-        `Vercel GitHub App has not synced the new repo "${repo.fullName}" after ~90s. ` +
-          `If you installed the App with "Only select repositories", grant it access to this repo or switch to "All repositories".`
-      );
-    });
+    // The Vercel GitHub App caches the list of repos it has access to, and
+    // brand-new GitHub repos take a few seconds to a couple of minutes to
+    // show up — even with "All repositories" permission. We can't query the
+    // cache directly: /v1/integrations/git-namespaces and /search-repo need a
+    // user principal, which team-scoped Integration OAuth tokens don't carry
+    // ("Missing principal user"). So we just sleep, then retry createProject
+    // on the specific sync-lag error below.
+    await step.sleep("wait-vercel-github-sync", "45s");
 
     // ── Step 6: Create Vercel project + configure env vars ─────────────────
 
@@ -361,11 +329,27 @@ export const projectCreate = inngest.createFunction(
         let vercelUrl = project.vercelProjectUrl;
 
         if (!vercelId) {
-          const result = await vercel.createProject(projectSlug, {
-            repoId: repo.id,
-          });
-          vercelId = result.id;
-          vercelUrl = `https://${result.name}.vercel.app`;
+          // Retry only on "install GitHub integration" error — residual sync
+          // lag after the 45s sleep. Bounded so we stay well under Vercel
+          // Hobby's 60s function timeout.
+          let result;
+          const maxAttempts = 4;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              result = await vercel.createProject(projectSlug, {
+                repoId: repo.id,
+              });
+              break;
+            } catch (err) {
+              const isSyncLag =
+                err instanceof Error &&
+                /install the GitHub integration/i.test(err.message);
+              if (!isSyncLag || attempt === maxAttempts) throw err;
+              await new Promise((r) => setTimeout(r, 8000));
+            }
+          }
+          vercelId = result!.id;
+          vercelUrl = `https://${result!.name}.vercel.app`;
 
           await prisma.project.update({
             where: { id: projectId },
