@@ -34,12 +34,26 @@ export class GitHubClient {
     return this.request("/user");
   }
 
-  /** Create a new repository under the authenticated user. */
-  async createRepo(name: string, isPrivate = true): Promise<{ id: number; full_name: string; html_url: string; clone_url: string }> {
+  /**
+   * Create a new repository under the authenticated user.
+   * `auto_init: true` is required so the repo has an initial commit — the
+   * Git DB API (/git/blobs, /git/trees, …) returns 409 "Git Repository is
+   * empty." on repos with zero commits, which breaks pushFiles otherwise.
+   */
+  async createRepo(
+    name: string,
+    isPrivate = true
+  ): Promise<{
+    id: number;
+    full_name: string;
+    html_url: string;
+    clone_url: string;
+    default_branch: string;
+  }> {
     return this.request("/user/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, private: isPrivate, auto_init: false }),
+      body: JSON.stringify({ name, private: isPrivate, auto_init: true }),
     });
   }
 
@@ -105,12 +119,46 @@ export class GitHubClient {
   async createTree(
     owner: string,
     repo: string,
-    tree: Array<{ path: string; mode: string; type: string; sha: string }>
+    tree: Array<{ path: string; mode: string; type: string; sha: string }>,
+    baseTree?: string
   ): Promise<{ sha: string }> {
     return this.request(`/repos/${owner}/${repo}/git/trees`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tree }),
+      body: JSON.stringify({ tree, ...(baseTree ? { base_tree: baseTree } : {}) }),
+    });
+  }
+
+  /** Read a Git reference (e.g. "heads/main"). */
+  async getRef(
+    owner: string,
+    repo: string,
+    ref: string
+  ): Promise<{ object: { sha: string } }> {
+    return this.request(`/repos/${owner}/${repo}/git/refs/${ref}`);
+  }
+
+  /** Read a commit object by SHA. */
+  async getCommit(
+    owner: string,
+    repo: string,
+    sha: string
+  ): Promise<{ sha: string; tree: { sha: string } }> {
+    return this.request(`/repos/${owner}/${repo}/git/commits/${sha}`);
+  }
+
+  /** Fast-forward an existing Git reference to a new commit SHA. */
+  async updateRef(
+    owner: string,
+    repo: string,
+    ref: string,
+    sha: string,
+    force = false
+  ): Promise<void> {
+    await this.request(`/repos/${owner}/${repo}/git/refs/${ref}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sha, force }),
     });
   }
 
@@ -145,7 +193,14 @@ export class GitHubClient {
 
   /**
    * Push multiple files to a repo in a single commit using the Git Trees API.
-   * Works for both initial commits (empty repo) and updates.
+   *
+   * Requires the repo to have at least one commit (created via auto_init or a
+   * prior push). GitHub's /git/blobs endpoint returns 409 on truly empty
+   * repos, so createRepo now uses auto_init: true.
+   *
+   * The new commit is built on top of the existing main tip and merged with
+   * the existing tree via base_tree, so auto_init's README.md survives unless
+   * the pushed files explicitly override it.
    */
   async pushFiles(
     owner: string,
@@ -153,7 +208,13 @@ export class GitHubClient {
     files: Array<{ path: string; content: string }>,
     message: string
   ): Promise<void> {
-    // Create blobs for all files in parallel
+    if (files.length === 0) return;
+
+    const mainRef = await this.getRef(owner, repo, "heads/main");
+    const parentCommitSha = mainRef.object.sha;
+    const parentCommit = await this.getCommit(owner, repo, parentCommitSha);
+    const baseTreeSha = parentCommit.tree.sha;
+
     const blobs = await Promise.all(
       files.map(async (file) => {
         const blob = await this.createBlob(owner, repo, file.content);
@@ -161,7 +222,6 @@ export class GitHubClient {
       })
     );
 
-    // Build the tree
     const tree = blobs.map((blob) => ({
       path: blob.path,
       mode: "100644" as const,
@@ -169,19 +229,17 @@ export class GitHubClient {
       sha: blob.sha,
     }));
 
-    const treeResult = await this.createTree(owner, repo, tree);
+    const treeResult = await this.createTree(owner, repo, tree, baseTreeSha);
 
-    // Create commit (no parents for initial commit to empty repo)
     const commit = await this.createCommitObject(
       owner,
       repo,
       message,
       treeResult.sha,
-      []
+      [parentCommitSha]
     );
 
-    // Create the main branch reference
-    await this.createRef(owner, repo, "refs/heads/main", commit.sha);
+    await this.updateRef(owner, repo, "heads/main", commit.sha);
   }
 
   /** Delete a repository. */
