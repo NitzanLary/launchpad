@@ -301,17 +301,6 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Step 5b: Let Vercel's GitHub App sync the new repo ─────────────────
-    //
-    // The Vercel GitHub App caches the list of repos it has access to, and
-    // brand-new GitHub repos take a few seconds to a couple of minutes to
-    // show up — even with "All repositories" permission. We can't query the
-    // cache directly: /v1/integrations/git-namespaces and /search-repo need a
-    // user principal, which team-scoped Integration OAuth tokens don't carry
-    // ("Missing principal user"). So we just sleep, then retry createProject
-    // on the specific sync-lag error below.
-    await step.sleep("wait-vercel-github-sync", "45s");
-
     // ── Step 6: Create Vercel project + configure env vars ─────────────────
 
     const vercelProject = await step.run(
