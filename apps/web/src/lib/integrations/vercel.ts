@@ -12,19 +12,23 @@ export class VercelClient {
 
   private async request<T>(
     path: string,
-    options: RequestInit = {}
+    options: RequestInit & { skipTeamId?: boolean; query?: Record<string, string> } = {}
   ): Promise<T> {
+    const { skipTeamId, query, ...fetchOptions } = options;
     const url = new URL(`${VERCEL_API}${path}`);
-    if (this.teamId) {
+    if (this.teamId && !skipTeamId) {
       url.searchParams.set("teamId", this.teamId);
+    }
+    if (query) {
+      for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     }
 
     const response = await fetch(url.toString(), {
-      ...options,
+      ...fetchOptions,
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
         "Content-Type": "application/json",
-        ...options.headers,
+        ...fetchOptions.headers,
       },
     });
 
@@ -46,15 +50,34 @@ export class VercelClient {
     return this.request("/v9/projects");
   }
 
-  /** Check if the Vercel account has the GitHub integration (Vercel GitHub App) installed. */
-  async hasGitHubIntegration(): Promise<boolean> {
+  /**
+   * Check if the Vercel account has the GitHub integration (Vercel GitHub App) installed.
+   * Returns true/false when known, or null when detection failed (don't show a warning).
+   *
+   * The `git-namespaces` endpoint is user-scoped (not team-scoped) per the Vercel
+   * OpenAPI spec — its only query params are `host` and `provider`. Passing `teamId`
+   * causes Vercel to return an empty array, which is why the previous version always
+   * said "not connected" even when the app was installed.
+   */
+  async hasGitHubIntegration(): Promise<boolean | null> {
     try {
       const namespaces = await this.request<
-        Array<{ provider: string }>
-      >("/v1/integrations/git-namespaces");
+        Array<{ provider: string }> | { error?: unknown }
+      >("/v1/integrations/git-namespaces", {
+        skipTeamId: true,
+        query: { provider: "github" },
+      });
+      if (!Array.isArray(namespaces)) {
+        console.error(
+          "[vercel.hasGitHubIntegration] unexpected response shape:",
+          namespaces
+        );
+        return null;
+      }
       return namespaces.some((ns) => ns.provider.startsWith("github"));
-    } catch {
-      return false;
+    } catch (err) {
+      console.error("[vercel.hasGitHubIntegration] request failed:", err);
+      return null;
     }
   }
 

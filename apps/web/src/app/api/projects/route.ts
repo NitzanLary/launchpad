@@ -112,7 +112,9 @@ export async function POST(request: NextRequest) {
     );
     const vercel = new VercelClient(vercelToken, vercelAccountId);
     const hasGitHub = await vercel.hasGitHubIntegration();
-    if (!hasGitHub) {
+    // Only block when we positively know it's missing. `null` = detection failed,
+    // in which case let the pipeline try and surface a real Vercel error.
+    if (hasGitHub === false) {
       return NextResponse.json(
         {
           error: ERROR_CODES.VERCEL_GITHUB_NOT_CONNECTED,

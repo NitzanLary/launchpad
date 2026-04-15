@@ -117,7 +117,9 @@ export const projectCreate = inngest.createFunction(
         const hasGitHub = await new VercelClient(
           vercelToken, vercelAccountId
         ).hasGitHubIntegration();
-        if (!hasGitHub) {
+        // Only block on a definitive `false`. `null` = detection failed; let the
+        // pipeline proceed and surface a real Vercel error if the App is missing.
+        if (hasGitHub === false) {
           throw new Error(
             "Vercel does not have the GitHub integration installed. Please install the Vercel GitHub App at https://github.com/apps/vercel and try again."
           );

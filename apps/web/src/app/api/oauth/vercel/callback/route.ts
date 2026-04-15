@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
     try {
       const vercel = new VercelClient(tokens.access_token, tokens.team_id);
       const hasGitHub = await vercel.hasGitHubIntegration();
-      if (!hasGitHub) {
+      if (hasGitHub === false) {
         redirectParams = "connected=vercel&vercel_github=missing";
       }
     } catch {
