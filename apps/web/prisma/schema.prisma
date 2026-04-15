@@ -104,8 +104,9 @@ model Project {
   githubWebhookId Int?
 
   // Vercel
-  vercelProjectId  String?
-  vercelProjectUrl String?
+  vercelProjectId   String?
+  vercelProjectUrl  String?
+  vercelDeployNonce String?
 
   // Webhook
   webhookSecretEnc Bytes?
@@ -135,6 +136,7 @@ model Project {
 
 enum ProjectStatus {
   CREATING
+  AWAITING_VERCEL
   ACTIVE
   ERROR
   DELETING

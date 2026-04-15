@@ -86,33 +86,32 @@ export class VercelClient {
   }
 
   /**
-   * Create a new project linked to a GitHub repo.
-   * Vercel requires `repo` (full name); `repoId` is sent alongside as a hint
-   * so Vercel can match on the numeric id when slug resolution is slow for
-   * very recently created repos.
+   * Find a Vercel project by its linked GitHub repo (owner/name).
+   * Integration (vci) tokens cannot create GitHub-linked projects server-side
+   * — the user completes that in the browser via the Deploy Button flow.
+   * Afterward we look up the resulting project by its git link.
    */
-  async createProject(
-    name: string,
-    gitRepo: { repoFullName: string; repoId?: number }
-  ): Promise<{ id: string; name: string }> {
-    const gitRepository: {
-      type: "github";
-      repo: string;
-      repoId?: number;
-    } = {
-      type: "github",
-      repo: gitRepo.repoFullName,
-    };
-    if (gitRepo.repoId !== undefined) gitRepository.repoId = gitRepo.repoId;
-
-    return this.request("/v10/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        name,
-        framework: "nextjs",
-        gitRepository,
-      }),
+  async findProjectByRepo(
+    owner: string,
+    repo: string
+  ): Promise<{ id: string; name: string } | null> {
+    const target = `${owner}/${repo}`.toLowerCase();
+    const result = await this.request<{
+      projects: Array<{
+        id: string;
+        name: string;
+        link?: { type?: string; repo?: string; org?: string };
+      }>;
+    }>("/v9/projects");
+    const match = result.projects.find((p) => {
+      const link = p.link;
+      if (!link || link.type !== "github") return false;
+      if (link.repo && `${link.org ?? ""}/${link.repo}`.toLowerCase() === target) {
+        return true;
+      }
+      return link.repo?.toLowerCase() === target;
     });
+    return match ? { id: match.id, name: match.name } : null;
   }
 
   /** Set environment variables on a project. */

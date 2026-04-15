@@ -1,6 +1,7 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { notFound } from "next/navigation";
+import { CreateProgress } from "./create-progress";
 
 export default async function ProjectPage({
   params,
@@ -54,6 +55,11 @@ export default async function ProjectPage({
         </div>
         <StatusBadge status={project.status} />
       </div>
+
+      {/* Creation progress (polls + auto-redirects to Vercel when ready) */}
+      {project.status !== "ACTIVE" && project.status !== "DELETED" && (
+        <CreateProgress projectId={project.id} initialStatus={project.status} />
+      )}
 
       {/* Clone instructions for new projects */}
       {project.status === "ACTIVE" && project.githubRepoUrl && (
@@ -211,6 +217,7 @@ function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     ACTIVE: "bg-green-500/10 text-green-400",
     CREATING: "bg-yellow-500/10 text-yellow-400",
+    AWAITING_VERCEL: "bg-blue-500/10 text-blue-400",
     ERROR: "bg-red-500/10 text-red-400",
   };
 

@@ -17,15 +17,24 @@ import {
 
 /**
  * Multi-step project creation pipeline.
- * Triggered when a user creates a new project.
+ *
+ * Vercel's integration (vci) OAuth token cannot create GitHub-linked projects
+ * server-side — Vercel isolates it from the user's GitHub App binding. The
+ * pipeline therefore provisions everything it can, then suspends on a
+ * `project/vercel.linked` event while the user completes the Deploy Button
+ * flow on vercel.com in their browser. The OAuth deploy-callback route
+ * emits that event when the user returns.
  *
  * Steps:
  *  1. Validate prerequisites (OAuth connections, Supabase slots, org ID)
  *  2-4. [parallel] Create GitHub repo + Supabase staging + Supabase production
  *  5. Wait for both Supabase projects ready + fetch credentials
- *  6. Create Vercel project + configure env vars
- *  7-8. [parallel] Push scaffolded template + register GitHub webhook
- *  9. Finalize project record → ACTIVE
+ *  6-7. [parallel] Push scaffolded template + register GitHub webhook
+ *  8. Mark AWAITING_VERCEL with a fresh nonce
+ *  9. Wait for `project/vercel.linked` (user returns from Vercel Deploy Button)
+ * 10. Inject env vars on the newly linked Vercel project
+ * 11. Trigger a redeploy so the first build picks up the env vars
+ * 12. Finalize project record → ACTIVE
  */
 export const projectCreate = inngest.createFunction(
   {
@@ -63,7 +72,8 @@ export const projectCreate = inngest.createFunction(
         // Token may be invalid — continue cleanup
       }
 
-      // Clean up Vercel project
+      // Clean up Vercel project (only set if user completed the deploy flow
+      // but the pipeline failed afterward)
       try {
         if (project.vercelProjectId) {
           const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
@@ -78,7 +88,7 @@ export const projectCreate = inngest.createFunction(
 
       await prisma.project.update({
         where: { id: projectId },
-        data: { status: "ERROR" },
+        data: { status: "ERROR", vercelDeployNonce: null },
       });
     },
   },
@@ -301,159 +311,8 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Step 6: Create Vercel project + configure env vars ─────────────────
-
-    const vercelProject = await step.run(
-      "create-and-configure-vercel",
-      async () => {
-        const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
-        const vercel = new VercelClient(accessToken, providerAccountId);
-
-        // Idempotency: check if Vercel project was already created
-        const project = await prisma.project.findUniqueOrThrow({
-          where: { id: projectId },
-        });
-
-        let vercelId = project.vercelProjectId;
-        let vercelUrl = project.vercelProjectUrl;
-
-        if (!vercelId) {
-          // Retry only on "install GitHub integration" error — residual sync
-          // lag after the 45s sleep. Bounded so we stay well under Vercel
-          // Hobby's 60s function timeout.
-          let result;
-          const maxAttempts = 4;
-          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              result = await vercel.createProject(projectSlug, {
-                repoFullName: repo.fullName,
-                repoId: repo.id,
-              });
-              break;
-            } catch (err) {
-              const isSyncLag =
-                err instanceof Error &&
-                /install the GitHub integration/i.test(err.message);
-              if (!isSyncLag || attempt === maxAttempts) throw err;
-              await new Promise((r) => setTimeout(r, 8000));
-            }
-          }
-          vercelId = result!.id;
-          vercelUrl = `https://${result!.name}.vercel.app`;
-
-          await prisma.project.update({
-            where: { id: projectId },
-            data: {
-              vercelProjectId: vercelId,
-              vercelProjectUrl: vercelUrl,
-            },
-          });
-        }
-
-        // Configure env vars (idempotent — Vercel overwrites)
-        const stagingDbUrl = buildDatabaseUrl(
-          staging.ref,
-          staging.password,
-          staging.region
-        );
-        const prodDbUrl = buildDatabaseUrl(
-          production.ref,
-          production.password,
-          production.region
-        );
-
-        const envVars = [
-          // Staging/Preview environment variables
-          {
-            key: "DATABASE_URL",
-            value: stagingDbUrl,
-            target: ["preview", "development"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "encrypted" as const,
-          },
-          {
-            key: "NEXT_PUBLIC_SUPABASE_URL",
-            value: stagingDb.url,
-            target: ["preview", "development"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "plain" as const,
-          },
-          {
-            key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-            value: stagingDb.anonKey,
-            target: ["preview", "development"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "plain" as const,
-          },
-          {
-            key: "SUPABASE_SERVICE_ROLE_KEY",
-            value: stagingDb.serviceKey,
-            target: ["preview", "development"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "encrypted" as const,
-          },
-          // Production environment variables
-          {
-            key: "DATABASE_URL",
-            value: prodDbUrl,
-            target: ["production"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "encrypted" as const,
-          },
-          {
-            key: "NEXT_PUBLIC_SUPABASE_URL",
-            value: prodDb.url,
-            target: ["production"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "plain" as const,
-          },
-          {
-            key: "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-            value: prodDb.anonKey,
-            target: ["production"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "plain" as const,
-          },
-          {
-            key: "SUPABASE_SERVICE_ROLE_KEY",
-            value: prodDb.serviceKey,
-            target: ["production"] as (
-              | "production"
-              | "preview"
-              | "development"
-            )[],
-            type: "encrypted" as const,
-          },
-        ];
-
-        await vercel.setEnvVars(vercelId, envVars);
-
-        return { id: vercelId, url: vercelUrl! };
-      }
-    );
-
-    // ── Steps 7-8: Push template + register webhook in parallel ────────────
+    // ── Steps 6-7: Push template + register webhook in parallel ────────────
+    // Must run before the Vercel browser flow so the repo has code to deploy.
 
     const [{ claudeMdPlatformHash }] = await Promise.all([
       step.run("push-template", async () => {
@@ -517,7 +376,93 @@ export const projectCreate = inngest.createFunction(
       }),
     ]);
 
-    // ── Step 9: Finalize project record ─────────────────────────────────────
+    // ── Step 8: Mark AWAITING_VERCEL and issue a nonce ─────────────────────
+
+    await step.run("mark-awaiting-vercel", async () => {
+      const nonce = randomBytes(32).toString("hex");
+      await prisma.project.update({
+        where: { id: projectId },
+        data: {
+          status: "AWAITING_VERCEL",
+          vercelDeployNonce: nonce,
+        },
+      });
+    });
+
+    // ── Step 9: Wait for the user to complete Vercel Deploy Button flow ────
+    // The /api/oauth/vercel/deploy-callback route emits this event when the
+    // user returns from vercel.com/new/clone with the project linked to the
+    // GitHub repo we provisioned above.
+
+    const linked = await step.waitForEvent("await-vercel-link", {
+      event: "project/vercel.linked",
+      timeout: "15m",
+      match: "data.projectId",
+    });
+
+    if (!linked) {
+      throw new Error(
+        "Timed out waiting for Vercel project link. The user did not complete the Vercel Deploy Button flow within 15 minutes."
+      );
+    }
+
+    const vercelProjectId = linked.data.vercelProjectId as string;
+    const vercelProjectUrl = linked.data.vercelProjectUrl as string;
+
+    // ── Step 10: Inject env vars on the newly linked Vercel project ────────
+
+    await step.run("inject-vercel-env-vars", async () => {
+      const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
+      const vercel = new VercelClient(accessToken, providerAccountId);
+
+      const stagingDbUrl = buildDatabaseUrl(
+        staging.ref,
+        staging.password,
+        staging.region
+      );
+      const prodDbUrl = buildDatabaseUrl(
+        production.ref,
+        production.password,
+        production.region
+      );
+
+      type Target = ("production" | "preview" | "development")[];
+      const previewTargets: Target = ["preview", "development"];
+      const productionTargets: Target = ["production"];
+
+      const envVars = [
+        // Staging/Preview
+        { key: "DATABASE_URL", value: stagingDbUrl, target: previewTargets, type: "encrypted" as const },
+        { key: "NEXT_PUBLIC_SUPABASE_URL", value: stagingDb.url, target: previewTargets, type: "plain" as const },
+        { key: "NEXT_PUBLIC_SUPABASE_ANON_KEY", value: stagingDb.anonKey, target: previewTargets, type: "plain" as const },
+        { key: "SUPABASE_SERVICE_ROLE_KEY", value: stagingDb.serviceKey, target: previewTargets, type: "encrypted" as const },
+        // Production
+        { key: "DATABASE_URL", value: prodDbUrl, target: productionTargets, type: "encrypted" as const },
+        { key: "NEXT_PUBLIC_SUPABASE_URL", value: prodDb.url, target: productionTargets, type: "plain" as const },
+        { key: "NEXT_PUBLIC_SUPABASE_ANON_KEY", value: prodDb.anonKey, target: productionTargets, type: "plain" as const },
+        { key: "SUPABASE_SERVICE_ROLE_KEY", value: prodDb.serviceKey, target: productionTargets, type: "encrypted" as const },
+      ];
+
+      await vercel.setEnvVars(vercelProjectId, envVars);
+    });
+
+    // ── Step 11: Trigger a redeploy so the first build gets the env vars ───
+    // Vercel's initial build (from the clone flow) ran before we injected
+    // env vars, so it will have failed or come up broken. Kick a new build.
+
+    await step.run("trigger-redeploy", async () => {
+      const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
+      const vercel = new VercelClient(accessToken, providerAccountId);
+      try {
+        await vercel.createDeployment(projectSlug, "main", "production");
+      } catch (err) {
+        // Don't fail the whole pipeline if the redeploy request hiccups —
+        // the user can always redeploy from Vercel's UI. Log and continue.
+        console.error("[project-create] trigger-redeploy failed:", err);
+      }
+    });
+
+    // ── Step 12: Finalize project record ───────────────────────────────────
 
     await step.run("finalize-project", async () => {
       await prisma.$transaction([
@@ -526,6 +471,7 @@ export const projectCreate = inngest.createFunction(
           data: {
             status: "ACTIVE",
             claudeMdHash: claudeMdPlatformHash,
+            vercelDeployNonce: null,
           },
         }),
         prisma.environment.create({
@@ -539,7 +485,7 @@ export const projectCreate = inngest.createFunction(
             supabaseServiceKey: encrypt(stagingDb.serviceKey),
             supabaseUrl: stagingDb.url,
             vercelEnvTarget: "preview",
-            currentUrl: vercelProject.url,
+            currentUrl: vercelProjectUrl,
           },
         }),
         prisma.environment.create({
