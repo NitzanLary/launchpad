@@ -337,6 +337,7 @@ export const projectCreate = inngest.createFunction(
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
               result = await vercel.createProject(projectSlug, {
+                repoFullName: repo.fullName,
                 repoId: repo.id,
               });
               break;

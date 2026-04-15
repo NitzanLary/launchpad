@@ -87,18 +87,23 @@ export class VercelClient {
 
   /**
    * Create a new project linked to a GitHub repo.
-   * Prefer `repoId` (numeric GitHub repo id) over `repo` (full name) — the
-   * numeric id bypasses slug resolution against Vercel's cached namespace list,
-   * which is unreliable for very recently created repos.
+   * Vercel requires `repo` (full name); `repoId` is sent alongside as a hint
+   * so Vercel can match on the numeric id when slug resolution is slow for
+   * very recently created repos.
    */
   async createProject(
     name: string,
-    gitRepo: { repoId: number } | { repoFullName: string }
+    gitRepo: { repoFullName: string; repoId?: number }
   ): Promise<{ id: string; name: string }> {
-    const gitRepository =
-      "repoId" in gitRepo
-        ? { type: "github" as const, repoId: gitRepo.repoId }
-        : { type: "github" as const, repo: gitRepo.repoFullName };
+    const gitRepository: {
+      type: "github";
+      repo: string;
+      repoId?: number;
+    } = {
+      type: "github",
+      repo: gitRepo.repoFullName,
+    };
+    if (gitRepo.repoId !== undefined) gitRepository.repoId = gitRepo.repoId;
 
     return this.request("/v10/projects", {
       method: "POST",
