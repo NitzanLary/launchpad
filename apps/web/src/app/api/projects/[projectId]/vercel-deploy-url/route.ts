@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getAppUrl } from "@/lib/app-url";
 
 /**
  * GET /api/projects/:id/vercel-deploy-url
@@ -14,7 +15,7 @@ import { prisma } from "@/lib/db";
  * the link step must happen in the user's browser session.
  */
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   const session = await auth();
@@ -45,8 +46,7 @@ export async function GET(
     );
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
-  const redirectUrl = `${appUrl}/api/oauth/vercel/deploy-callback?state=${project.id}.${project.vercelDeployNonce}`;
+  const redirectUrl = `${getAppUrl()}/api/oauth/vercel/deploy-callback?state=${project.id}.${project.vercelDeployNonce}`;
 
   const clone = new URL("https://vercel.com/new/clone");
   clone.searchParams.set("repository-url", project.githubRepoUrl);

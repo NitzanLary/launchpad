@@ -10,6 +10,7 @@ import {
   buildDatabaseUrl,
 } from "@/lib/integrations";
 import { generateTemplateFiles } from "@/lib/template";
+import { getAppUrl } from "@/lib/app-url";
 import {
   TEMPLATE_VERSION,
   LAUNCHPAD_VERSION,
@@ -353,9 +354,7 @@ export const projectCreate = inngest.createFunction(
         const github = new GitHubClient(accessToken);
 
         const webhookSecret = randomBytes(32).toString("hex");
-        const appUrl =
-          process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-        const webhookUrl = `${appUrl}/api/webhooks/github`;
+        const webhookUrl = `${getAppUrl()}/api/webhooks/github`;
 
         const result = await github.createWebhook(
           repo.owner,
