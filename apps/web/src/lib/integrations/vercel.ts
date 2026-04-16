@@ -86,32 +86,69 @@ export class VercelClient {
   }
 
   /**
-   * Find a Vercel project by its linked GitHub repo (owner/name).
-   * Integration (vci) tokens cannot create GitHub-linked projects server-side
-   * — the user completes that in the browser via the Deploy Button flow.
-   * Afterward we look up the resulting project by its git link.
+   * Shape of a Vercel project's git link as returned by /v9/projects.
+   * Vercel has been inconsistent about whether `repo` carries just the name
+   * or the full "owner/name"; normalize both on the read side.
    */
-  async findProjectByRepo(
-    owner: string,
-    repo: string
-  ): Promise<{ id: string; name: string } | null> {
-    const target = `${owner}/${repo}`.toLowerCase();
+  async findProjectByName(
+    name: string
+  ): Promise<{
+    id: string;
+    name: string;
+    link: {
+      type: "github";
+      repo: string;
+      repoId?: number;
+      org?: string;
+      owner?: string;
+    };
+  } | null> {
     const result = await this.request<{
       projects: Array<{
         id: string;
         name: string;
-        link?: { type?: string; repo?: string; org?: string };
+        link?: {
+          type?: string;
+          repo?: string;
+          repoId?: number;
+          org?: string;
+          owner?: string;
+        };
       }>;
-    }>("/v9/projects");
-    const match = result.projects.find((p) => {
-      const link = p.link;
-      if (!link || link.type !== "github") return false;
-      if (link.repo && `${link.org ?? ""}/${link.repo}`.toLowerCase() === target) {
-        return true;
-      }
-      return link.repo?.toLowerCase() === target;
-    });
-    return match ? { id: match.id, name: match.name } : null;
+    }>("/v9/projects", { query: { search: name } });
+
+    const match = result.projects.find(
+      (p) => p.name === name && p.link?.type === "github" && !!p.link.repo
+    );
+    if (!match || !match.link) return null;
+    return {
+      id: match.id,
+      name: match.name,
+      link: {
+        type: "github",
+        repo: match.link.repo!,
+        repoId: match.link.repoId,
+        org: match.link.org,
+        owner: match.link.owner,
+      },
+    };
+  }
+
+  /** Get a single project by id. Used to re-fetch link details after lookup. */
+  async getProject(
+    projectId: string
+  ): Promise<{
+    id: string;
+    name: string;
+    link?: {
+      type?: string;
+      repo?: string;
+      repoId?: number;
+      org?: string;
+      owner?: string;
+    };
+  }> {
+    return this.request(`/v9/projects/${projectId}`);
   }
 
   /** Set environment variables on a project. */

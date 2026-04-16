@@ -46,3 +46,27 @@ export function generateTemplateFiles(data: TemplateData): {
 
   return { files, claudeMdPlatformHash };
 }
+
+/**
+ * Generate only the per-project customization files that get pushed on top
+ * of Vercel's `/new/clone` of the canonical template repo. Stock scaffold
+ * files (src/, prisma/, public/, configs) already live in the template repo
+ * and only need to be cloned, not re-pushed.
+ */
+export function generateCustomizationFiles(data: TemplateData): {
+  files: TemplateFile[];
+  claudeMdPlatformHash: string;
+} {
+  const claudeMdContent = renderClaudeMd(data);
+  const claudeMdPlatformHash = computePlatformHash(claudeMdContent);
+  const configJsonContent = renderConfigJson(data, claudeMdPlatformHash);
+
+  const files: TemplateFile[] = [
+    { path: "CLAUDE.md", content: claudeMdContent },
+    { path: ".launchpad/config.json", content: configJsonContent },
+    { path: "package.json", content: renderPackageJson(data) },
+    { path: "README.md", content: renderReadme(data) },
+  ];
+
+  return { files, claudeMdPlatformHash };
+}

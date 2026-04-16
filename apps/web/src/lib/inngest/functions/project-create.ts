@@ -9,7 +9,7 @@ import {
   SupabaseClient,
   buildDatabaseUrl,
 } from "@/lib/integrations";
-import { generateTemplateFiles } from "@/lib/template";
+import { generateCustomizationFiles } from "@/lib/template";
 import { getAppUrl } from "@/lib/app-url";
 import {
   TEMPLATE_VERSION,
@@ -19,23 +19,25 @@ import {
 /**
  * Multi-step project creation pipeline.
  *
- * Vercel's integration (vci) OAuth token cannot create GitHub-linked projects
- * server-side — Vercel isolates it from the user's GitHub App binding. The
- * pipeline therefore provisions everything it can, then suspends on a
- * `project/vercel.linked` event while the user completes the Deploy Button
- * flow on vercel.com in their browser. The OAuth deploy-callback route
- * emits that event when the user returns.
+ * LaunchPad can't create GitHub-linked Vercel projects server-side: integration
+ * (vci) tokens are isolated from the user's GitHub App binding, and Vercel
+ * has no "import existing repo" deep-link. So we rely on Vercel's Deploy
+ * Button flow, which clones a canonical template repo into a new repo under
+ * the user's GitHub account AND creates a Vercel project linked to it — all
+ * in the user's browser session.
  *
  * Steps:
  *  1. Validate prerequisites (OAuth connections, Supabase slots, org ID)
- *  2-4. [parallel] Create GitHub repo + Supabase staging + Supabase production
- *  5. Wait for both Supabase projects ready + fetch credentials
- *  6-7. [parallel] Push scaffolded template + register GitHub webhook
- *  8. Mark AWAITING_VERCEL with a fresh nonce
- *  9. Wait for `project/vercel.linked` (user returns from Vercel Deploy Button)
- * 10. Inject env vars on the newly linked Vercel project
- * 11. Trigger a redeploy so the first build picks up the env vars
- * 12. Finalize project record → ACTIVE
+ *  2-3. [parallel] Create Supabase staging + production projects
+ *  4. Wait for both Supabase projects ready + fetch credentials
+ *  5. Mark AWAITING_VERCEL with a fresh nonce
+ *  6. Wait for `project/vercel.linked` (user returns from Vercel)
+ *  7. Push the per-project customization commit onto the cloned repo
+ *     (CLAUDE.md, .launchpad/config.json, package.json, README.md)
+ *  8. Register the GitHub webhook on the user's new repo
+ *  9. Inject env vars on the Vercel project
+ * 10. Trigger a redeploy so the first build picks up the env vars
+ * 11. Finalize project record → ACTIVE
  */
 export const projectCreate = inngest.createFunction(
   {
@@ -73,8 +75,8 @@ export const projectCreate = inngest.createFunction(
         // Token may be invalid — continue cleanup
       }
 
-      // Clean up Vercel project (only set if user completed the deploy flow
-      // but the pipeline failed afterward)
+      // Clean up Vercel project (only set if the user completed the browser
+      // flow but the pipeline failed afterward)
       try {
         if (project.vercelProjectId) {
           const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
@@ -85,7 +87,8 @@ export const projectCreate = inngest.createFunction(
         // Token may be invalid — continue cleanup
       }
 
-      // Don't delete GitHub repo — user may want to inspect it
+      // Don't delete the user's GitHub repo (Vercel created it in their
+      // account via the clone flow) — leave it for the user to inspect.
 
       await prisma.project.update({
         where: { id: projectId },
@@ -159,47 +162,9 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Steps 2-4: Create GitHub repo + both Supabase projects in parallel ─
+    // ── Steps 2-3: Create both Supabase projects in parallel ───────────────
 
-    const [repo, staging, production] = await Promise.all([
-      step.run("create-github-repo", async () => {
-        // Idempotency: check if repo was already created
-        const project = await prisma.project.findUniqueOrThrow({
-          where: { id: projectId },
-        });
-        if (project.githubRepoId) {
-          return {
-            id: project.githubRepoId,
-            url: project.githubRepoUrl!,
-            owner: project.githubOwner!,
-            fullName: `${project.githubOwner}/${projectSlug}`,
-          };
-        }
-
-        const { accessToken } = await getProviderToken(userId, "GITHUB");
-        const github = new GitHubClient(accessToken);
-
-        const user = await github.getUser();
-        const result = await github.createRepo(projectSlug, true);
-
-        // Persist immediately for idempotency and cleanup
-        await prisma.project.update({
-          where: { id: projectId },
-          data: {
-            githubRepoId: result.id,
-            githubRepoUrl: result.html_url,
-            githubOwner: user.login,
-          },
-        });
-
-        return {
-          id: result.id,
-          url: result.html_url,
-          owner: user.login,
-          fullName: result.full_name,
-        };
-      }),
-
+    const [staging, production] = await Promise.all([
       step.run("create-supabase-staging", async () => {
         const { accessToken } = await getProviderToken(userId, "SUPABASE");
         const supabase = new SupabaseClient(accessToken);
@@ -247,7 +212,7 @@ export const projectCreate = inngest.createFunction(
 
     await step.sleep("wait-supabase-provision", "30s");
 
-    // ── Step 5: Check both Supabase projects ready + fetch credentials ──────
+    // ── Step 4: Check both Supabase projects ready + fetch credentials ──────
 
     const { stagingDb, prodDb } = await step.run(
       "check-supabase-ready",
@@ -312,70 +277,7 @@ export const projectCreate = inngest.createFunction(
       }
     );
 
-    // ── Steps 6-7: Push template + register webhook in parallel ────────────
-    // Must run before the Vercel browser flow so the repo has code to deploy.
-
-    const [{ claudeMdPlatformHash }] = await Promise.all([
-      step.run("push-template", async () => {
-        const { accessToken } = await getProviderToken(userId, "GITHUB");
-        const github = new GitHubClient(accessToken);
-
-        const { files, claudeMdPlatformHash } = generateTemplateFiles({
-          projectName,
-          projectSlug,
-          projectId,
-          templateVersion: TEMPLATE_VERSION,
-          launchpadVersion: LAUNCHPAD_VERSION,
-          createdAt: new Date().toISOString(),
-          supabaseStagingProjectId: stagingDb.projectId,
-          supabaseProdProjectId: prodDb.projectId,
-          githubOwner: repo.owner,
-        });
-
-        await github.pushFiles(
-          repo.owner,
-          projectSlug,
-          files,
-          "Initial project scaffold by LaunchPad"
-        );
-
-        return { claudeMdPlatformHash };
-      }),
-
-      step.run("register-webhook", async () => {
-        const project = await prisma.project.findUniqueOrThrow({
-          where: { id: projectId },
-        });
-        if (project.githubWebhookId) {
-          return { id: project.githubWebhookId };
-        }
-
-        const { accessToken } = await getProviderToken(userId, "GITHUB");
-        const github = new GitHubClient(accessToken);
-
-        const webhookSecret = randomBytes(32).toString("hex");
-        const webhookUrl = `${getAppUrl()}/api/webhooks/github`;
-
-        const result = await github.createWebhook(
-          repo.owner,
-          projectSlug,
-          webhookUrl,
-          webhookSecret
-        );
-
-        await prisma.project.update({
-          where: { id: projectId },
-          data: {
-            githubWebhookId: result.id,
-            webhookSecretEnc: encrypt(webhookSecret),
-          },
-        });
-
-        return { id: result.id };
-      }),
-    ]);
-
-    // ── Step 8: Mark AWAITING_VERCEL and issue a nonce ─────────────────────
+    // ── Step 5: Mark AWAITING_VERCEL and issue a nonce ─────────────────────
 
     await step.run("mark-awaiting-vercel", async () => {
       const nonce = randomBytes(32).toString("hex");
@@ -388,10 +290,9 @@ export const projectCreate = inngest.createFunction(
       });
     });
 
-    // ── Step 9: Wait for the user to complete Vercel Deploy Button flow ────
-    // The /api/oauth/vercel/deploy-callback route emits this event when the
-    // user returns from vercel.com/new/clone with the project linked to the
-    // GitHub repo we provisioned above.
+    // ── Step 6: Wait for the user to complete Vercel Deploy Button flow ────
+    // /api/oauth/vercel/deploy-callback emits this event after looking up the
+    // newly created Vercel project + linked GitHub repo.
 
     const linked = await step.waitForEvent("await-vercel-link", {
       event: "project/vercel.linked",
@@ -407,8 +308,76 @@ export const projectCreate = inngest.createFunction(
 
     const vercelProjectId = linked.data.vercelProjectId as string;
     const vercelProjectUrl = linked.data.vercelProjectUrl as string;
+    const githubOwner = linked.data.githubOwner as string;
+    const githubRepoName = linked.data.githubRepoName as string;
 
-    // ── Step 10: Inject env vars on the newly linked Vercel project ────────
+    // ── Step 7: Push per-project customization commit to the cloned repo ───
+    // The stock template (CLAUDE.md/package.json/etc.) got cloned during the
+    // Deploy Button flow. Overwrite those files with per-project versions
+    // that carry the real project id, slug, supabase refs, and platform hash.
+
+    const { claudeMdPlatformHash } = await step.run(
+      "push-customization",
+      async () => {
+        const { accessToken } = await getProviderToken(userId, "GITHUB");
+        const github = new GitHubClient(accessToken);
+
+        const { files, claudeMdPlatformHash } = generateCustomizationFiles({
+          projectName,
+          projectSlug,
+          projectId,
+          templateVersion: TEMPLATE_VERSION,
+          launchpadVersion: LAUNCHPAD_VERSION,
+          createdAt: new Date().toISOString(),
+          supabaseStagingProjectId: stagingDb.projectId,
+          supabaseProdProjectId: prodDb.projectId,
+          githubOwner,
+        });
+
+        await github.pushFiles(
+          githubOwner,
+          githubRepoName,
+          files,
+          "Apply LaunchPad project customization"
+        );
+
+        return { claudeMdPlatformHash };
+      }
+    );
+
+    // ── Step 8: Register the GitHub webhook on the user's new repo ─────────
+
+    await step.run("register-webhook", async () => {
+      const project = await prisma.project.findUniqueOrThrow({
+        where: { id: projectId },
+      });
+      if (project.githubWebhookId) return { id: project.githubWebhookId };
+
+      const { accessToken } = await getProviderToken(userId, "GITHUB");
+      const github = new GitHubClient(accessToken);
+
+      const webhookSecret = randomBytes(32).toString("hex");
+      const webhookUrl = `${getAppUrl()}/api/webhooks/github`;
+
+      const result = await github.createWebhook(
+        githubOwner,
+        githubRepoName,
+        webhookUrl,
+        webhookSecret
+      );
+
+      await prisma.project.update({
+        where: { id: projectId },
+        data: {
+          githubWebhookId: result.id,
+          webhookSecretEnc: encrypt(webhookSecret),
+        },
+      });
+
+      return { id: result.id };
+    });
+
+    // ── Step 9: Inject env vars on the newly linked Vercel project ─────────
 
     await step.run("inject-vercel-env-vars", async () => {
       const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
@@ -445,9 +414,9 @@ export const projectCreate = inngest.createFunction(
       await vercel.setEnvVars(vercelProjectId, envVars);
     });
 
-    // ── Step 11: Trigger a redeploy so the first build gets the env vars ───
-    // Vercel's initial build (from the clone flow) ran before we injected
-    // env vars, so it will have failed or come up broken. Kick a new build.
+    // ── Step 10: Trigger a redeploy so the first build gets the env vars ───
+    // The clone flow kicked off an initial build before we injected env vars
+    // and before the customization commit landed. Kick a fresh build now.
 
     await step.run("trigger-redeploy", async () => {
       const { accessToken, providerAccountId } = await getProviderToken(userId, "VERCEL");
@@ -461,7 +430,7 @@ export const projectCreate = inngest.createFunction(
       }
     });
 
-    // ── Step 12: Finalize project record ───────────────────────────────────
+    // ── Step 11: Finalize project record ───────────────────────────────────
 
     await step.run("finalize-project", async () => {
       await prisma.$transaction([

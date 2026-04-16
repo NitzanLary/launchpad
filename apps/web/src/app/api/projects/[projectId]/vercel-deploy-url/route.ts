@@ -3,16 +3,21 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getAppUrl } from "@/lib/app-url";
 
+const DEFAULT_TEMPLATE_REPO_URL =
+  "https://github.com/NitzanLary/launchpad-template";
+
 /**
  * GET /api/projects/:id/vercel-deploy-url
  *
  * Returns the Vercel Deploy Button URL the browser should redirect to when
- * the project is in AWAITING_VERCEL state. The user completes the clone flow
- * on vercel.com and Vercel redirects back to /api/oauth/vercel/deploy-callback.
+ * the project is in AWAITING_VERCEL state.
  *
- * Server-side project creation via the integration (vci) token is impossible
- * because Vercel isolates that token from the user's GitHub App binding, so
- * the link step must happen in the user's browser session.
+ * Vercel's `/new/clone` flow clones a source template repo into a NEW repo
+ * under the user's GitHub account and creates a Vercel project linked to it
+ * — so we point it at the canonical LaunchPad template and let Vercel create
+ * both the user's repo and the Vercel project in their browser session.
+ * When the user returns, /api/oauth/vercel/deploy-callback looks up the
+ * resulting project and resumes the Inngest pipeline.
  */
 export async function GET(
   _request: NextRequest,
@@ -39,18 +44,21 @@ export async function GET(
     );
   }
 
-  if (!project.vercelDeployNonce || !project.githubRepoUrl) {
+  if (!project.vercelDeployNonce) {
     return NextResponse.json(
-      { error: "Project is missing the data needed to build a Vercel deploy URL." },
+      { error: "Project is missing the deploy nonce." },
       { status: 500 }
     );
   }
 
+  const templateRepoUrl =
+    process.env.LAUNCHPAD_TEMPLATE_REPO_URL || DEFAULT_TEMPLATE_REPO_URL;
   const redirectUrl = `${getAppUrl()}/api/oauth/vercel/deploy-callback?state=${project.id}.${project.vercelDeployNonce}`;
 
   const clone = new URL("https://vercel.com/new/clone");
-  clone.searchParams.set("repository-url", project.githubRepoUrl);
+  clone.searchParams.set("repository-url", templateRepoUrl);
   clone.searchParams.set("project-name", project.slug);
+  clone.searchParams.set("repository-name", project.slug);
   clone.searchParams.set("redirect-url", redirectUrl);
 
   // Binds LaunchPad's Vercel integration to the new project during the clone
