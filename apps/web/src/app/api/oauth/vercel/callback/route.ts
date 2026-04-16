@@ -10,8 +10,23 @@ import {
 import { VercelClient } from "@/lib/integrations";
 
 /**
- * GET /api/oauth/vercel/callback — Handles the Vercel OAuth callback.
- * Validates state, exchanges code for tokens, encrypts and stores them.
+ * GET /api/oauth/vercel/callback
+ *
+ * Handles two distinct flows that both terminate here because Vercel only
+ * lets us register one redirect URL per integration:
+ *
+ *  1. User-initiated connect from Settings. We generated the `state`
+ *     cookie via /api/oauth/vercel, Vercel echoes it back, we validate,
+ *     exchange code, store tokens, redirect to /settings.
+ *
+ *  2. Vercel-initiated integration install — triggered when a user clicks
+ *     "Add" on the LaunchPad integration card inside vercel.com/new/clone.
+ *     Vercel sends `configurationId` + `next` and does NOT echo a state
+ *     we generated. Skip state validation, exchange code the same way,
+ *     store tokens, and redirect to Vercel's `next` URL so the user
+ *     returns to the clone flow to finish.
+ *
+ * We distinguish the two by the presence of `configurationId`.
  */
 export async function GET(request: NextRequest) {
   const session = await auth();
@@ -23,6 +38,10 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get("code");
   const state = searchParams.get("state");
   const error = searchParams.get("error");
+  const configurationId = searchParams.get("configurationId");
+  const next = searchParams.get("next");
+
+  const isIntegrationInstall = !!configurationId;
 
   if (error) {
     const message = searchParams.get("error_description") || error;
@@ -37,11 +56,15 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const isValid = await validateOAuthState(state, "vercel");
-  if (!isValid) {
-    return NextResponse.redirect(
-      new URL("/settings?error=Invalid+state+parameter", request.url)
-    );
+  // Only validate CSRF state for user-initiated flows; Vercel's integration
+  // install doesn't round-trip a cookie-state.
+  if (!isIntegrationInstall) {
+    const isValid = await validateOAuthState(state, "vercel");
+    if (!isValid) {
+      return NextResponse.redirect(
+        new URL("/settings?error=Invalid+state+parameter", request.url)
+      );
+    }
   }
 
   try {
@@ -84,7 +107,14 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Check if Vercel has GitHub connected — warn user if not
+    // Integration install: return the user to Vercel's `next` URL so they
+    // can finish the clone flow. Only honor Vercel-hosted URLs to avoid
+    // being an open redirect.
+    if (isIntegrationInstall && next && isVercelUrl(next)) {
+      return NextResponse.redirect(next);
+    }
+
+    // User-initiated connect: land back on Settings.
     let redirectParams = "connected=vercel";
     try {
       const vercel = new VercelClient(tokens.access_token, tokens.team_id);
@@ -104,5 +134,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(
       new URL("/settings?error=Failed+to+connect+Vercel", request.url)
     );
+  }
+}
+
+function isVercelUrl(candidate: string): boolean {
+  try {
+    const url = new URL(candidate);
+    return url.hostname === "vercel.com" || url.hostname.endsWith(".vercel.com");
+  } catch {
+    return false;
   }
 }
